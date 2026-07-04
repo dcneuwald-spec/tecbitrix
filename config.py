@@ -17,11 +17,11 @@ CLIENT_NAME = os.environ.get(
 
 # ID numérico da EMPRESA no CRM (opcional). É o número na URL da ficha:
 #   https://dutra.bitrix24.com.br/crm/company/details/<ID>/
-# Se None, o script tenta localizar a empresa pelo nome na lista do CRM.
-# Definir o ID torna a execução mais rápida e confiável:
-#   set BITRIX_COMPANY_ID=123   (Windows)  |  export BITRIX_COMPANY_ID=123
+# Se vazio, o script tenta localizar a empresa pelo nome na lista do CRM.
+# TEC SYSTEM SISTEMAS ELETRONICOS LTDA = 639
+#   (https://dutra.bitrix24.com.br/crm/company/details/639/)
 _cid = os.environ.get("BITRIX_COMPANY_ID", "").strip()
-COMPANY_ID = _cid or None
+COMPANY_ID = _cid or "639"
 
 # MODO ALTERNATIVO — grupo/projeto: ID numérico do grupo no Bitrix24.
 # Só é usado quando informado (--group-id ou BITRIX_GROUP_ID); caso
