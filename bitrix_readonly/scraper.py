@@ -174,12 +174,21 @@ def format_hours(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _frames(page) -> list:
-    """Todos os frames da página (documento principal + iframes do slider)."""
+    """
+    Todos os frames da página, com os IFRAMES PRIMEIRO: quando o slider está
+    aberto, o conteúdo correto está no iframe — o documento principal ainda
+    mostra a página de fundo e daria leituras erradas (ex.: título "Tarefas"
+    da lista em vez do título real da tarefa).
+    """
     try:
-        frames = list(page.frames)
+        main = page.main_frame
+        others = [f for f in page.frames if f != main]
+        return others + [main]
     except Exception:
-        frames = []
-    return frames or [page.main_frame]
+        try:
+            return [page.main_frame]
+        except Exception:
+            return []
 
 
 def _eval_frames(page, js: str, arg=None) -> list:

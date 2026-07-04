@@ -174,6 +174,17 @@ def main() -> int:
     except SessionExpired as e:
         print(f"\n❌ {e}")
         return 2
+    except RuntimeError as e:
+        # ex.: empresa/projeto não localizado — mensagem já explica o que fazer
+        print(f"\n❌ {e}")
+        return 4
+    except Exception as e:
+        print("\n❌ Erro inesperado durante a extração:")
+        print(f"   {type(e).__name__}: {e}")
+        print("   Nenhum dado foi alterado no Bitrix24 (somente leitura).")
+        print("   Rode teste.bat novamente; se o erro persistir, envie a "
+              "mensagem acima e o conteúdo de relatorios\\debug\\.")
+        return 1
 
     # 5) TODAS as tarefas coletadas entram no relatório, com a coluna
     #    "Vínculo" indicando como a relação com o cliente foi (ou não)

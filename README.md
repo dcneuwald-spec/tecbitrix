@@ -48,7 +48,19 @@ aba, que são ações de navegação) e aplica os recortes de período
 - `auth.json` é **sensível** (dá acesso à sua conta): já está no
   `.gitignore` — nunca commitar nem compartilhar.
 
-## Instalação
+## Uso no Windows (recomendado): arquivos .bat
+
+Basta dar dois cliques (ou digitar o nome no Prompt de Comando), na ordem:
+
+| Arquivo | O que faz |
+|---|---|
+| `instalar.bat` | 1ª vez: cria o ambiente Python e instala as dependências |
+| `login.bat` | abre o navegador para o login manual no Bitrix24 (salva `auth.json`) |
+| `teste.bat` | rodada de validação: 10 tarefas, navegador visível, com debug |
+| `relatorio.bat` | relatório completo (aceita opções, ex.: `relatorio.bat --headed`) |
+| `atualizar.bat` | baixa e aplica a versão mais recente do GitHub |
+
+## Instalação manual (Linux/Mac ou quem preferir)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -56,7 +68,7 @@ pip install -r requirements.txt
 playwright install chromium    # dispensável se o Chrome já estiver instalado
 ```
 
-## Uso
+## Uso manual
 
 ```bash
 # 1ª vez (ou quando a sessão expirar): login manual e captura da sessão
@@ -70,6 +82,7 @@ python gerar_relatorio.py --headed          # com janela visível
 python gerar_relatorio.py --company-id 123  # pula a busca da empresa pelo nome
 python gerar_relatorio.py --group-id 456    # modo alternativo: grupo/projeto
 python gerar_relatorio.py --max-tasks 5     # execução de teste com poucas tarefas
+python gerar_relatorio.py --debug           # salva diagnóstico em relatorios/debug/
 ```
 
 Configurações (nome do cliente, URL, timeouts…) ficam em `config.py` e podem
