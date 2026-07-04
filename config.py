@@ -15,17 +15,9 @@ CLIENT_NAME = os.environ.get(
     "BITRIX_CLIENT_NAME", "TEC SYSTEM SISTEMAS ELETRONICOS LTDA"
 )
 
-# ID numérico da EMPRESA no CRM (opcional). É o número na URL da ficha:
-#   https://dutra.bitrix24.com.br/crm/company/details/<ID>/
-# Se vazio, o script tenta localizar a empresa pelo nome na lista do CRM.
-# TEC SYSTEM SISTEMAS ELETRONICOS LTDA = 639
-#   (https://dutra.bitrix24.com.br/crm/company/details/639/)
-_cid = os.environ.get("BITRIX_COMPANY_ID", "").strip()
-COMPANY_ID = _cid or "639"
-
 # MODO ALTERNATIVO — grupo/projeto: ID numérico do grupo no Bitrix24.
 # Só é usado quando informado (--group-id ou BITRIX_GROUP_ID); caso
-# contrário o script trabalha no modo CRM (empresa) acima.
+# contrário o script trabalha no modo pesquisa global por nome.
 _gid = os.environ.get("BITRIX_GROUP_ID", "").strip()
 GROUP_ID = _gid or None
 

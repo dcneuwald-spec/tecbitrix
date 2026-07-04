@@ -58,8 +58,6 @@ class Task:
     total_seconds_reported: int | None = None  # campo "Tempo gasto", se lido
     warnings: list = field(default_factory=list)
     url: str = ""
-    crm_linked: bool | None = None  # True/False após verificação; None = n/a
-    link_evidence: str = ""  # como o vínculo foi confirmado (CRM/nome/termo)
 
     @property
     def total_seconds(self) -> int:
@@ -237,201 +235,6 @@ def _wait_for_slider(page, timeout_ms: int = 12000) -> None:
         waited += step
 
 
-# ---------------------------------------------------------------------------
-# Localização da empresa no CRM
-# ---------------------------------------------------------------------------
-
-COMPANY_LINK_RE = re.compile(r"/crm/company/details/(\d+)/")
-
-
-def find_company_id(page, log: GuardLog) -> str:
-    """Encontra o ID da empresa do cliente na lista de empresas do CRM."""
-    if config.COMPANY_ID:
-        print(f"→ Usando COMPANY_ID configurado: {config.COMPANY_ID}")
-        return str(config.COMPANY_ID)
-
-    target = _strip_accents(config.CLIENT_NAME.lower())
-    print(f"→ Procurando a empresa '{config.CLIENT_NAME}' no CRM ...")
-
-    # A lista de empresas pode responder em /crm/company/ ou /crm/company/list/
-    for list_url in (f"{config.BASE_URL}/crm/company/list/",
-                     f"{config.BASE_URL}/crm/company/"):
-        try:
-            page.goto(list_url, wait_until="domcontentloaded")
-        except Exception:
-            continue
-        page.wait_for_timeout(4000)
-
-        stable_rounds = 0
-        seen = 0
-        for _ in range(60):  # rolagem para paginar a lista (leitura)
-            links = []
-            for chunk in _eval_frames(
-                page,
-                "() => Array.from(document.querySelectorAll("
-                "\"a[href*='/crm/company/details/']\")).map(e => "
-                "({href: e.href, text: e.textContent || ''}))",
-            ):
-                links.extend(chunk)
-            for link in links:
-                text = _strip_accents((link["text"] or "").lower())
-                if target in text:
-                    m = COMPANY_LINK_RE.search(link["href"])
-                    if m:
-                        print(f"  ✓ Empresa encontrada (ID {m.group(1)})")
-                        return m.group(1)
-            if len(links) == seen:
-                stable_rounds += 1
-                if stable_rounds >= 3:
-                    break
-            else:
-                stable_rounds = 0
-                seen = len(links)
-            page.mouse.wheel(0, 5000)
-            page.wait_for_timeout(1500)
-
-    raise RuntimeError(
-        f"Não foi possível localizar a empresa '{config.CLIENT_NAME}' na "
-        "lista do CRM. Abra a empresa manualmente no Bitrix, copie o número "
-        "da URL (/crm/company/details/<ID>/) e execute com "
-        "--company-id <ID> (ou BITRIX_COMPANY_ID=<ID>)."
-    )
-
-
-def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
-    """
-    Abre a ficha da empresa no CRM, entra na aba 'Tarefas' (leitura) e
-    retorna {task_id: {"title": ..., "url": ...}} com as tarefas vinculadas.
-    """
-    url = f"{config.BASE_URL}/crm/company/details/{company_id}/"
-    print(f"→ Abrindo ficha da empresa no CRM: {url}")
-    page.goto(url, wait_until="domcontentloaded")
-    page.wait_for_timeout(4000)
-    # a ficha abre num slider/iframe — aguarda o conteúdo real aparecer
-    _wait_for_slider(page)
-
-    # A aba/filtro "Tarefas" da ficha CRM é apenas visualização. Tentamos
-    # seletores específicos (aba da ficha e filtro da linha do tempo) antes
-    # do texto genérico, sempre DENTRO da área da ficha — nunca o item
-    # "Tarefas" do menu lateral global (que navegaria para fora).
-    tab_selectors = [
-        "[data-tab-id*='task']",
-        ".ui-tabs-item:has-text('Tarefas')",
-        ".crm-entity-tab:has-text('Tarefas')",
-        "a[href*='#tab'][href*='task']",
-        # filtro da linha do tempo do CRM (chips acima do histórico)
-        ".crm-entity-stream-section-menu :text('Tarefas')",
-        ".crm-entity-stream-filter :text('Tarefas')",
-        ".crm-entity-section [data-id*='task']",
-    ]
-    opened = False
-    for sel in tab_selectors:
-        for frame in _frames(page):
-            try:
-                tab = frame.locator(sel)
-                if tab.count() > 0 and tab.first.is_visible():
-                    safe_click(tab.first,
-                               f"abrir visão 'Tarefas' da empresa ({sel})", log)
-                    page.wait_for_timeout(4000)
-                    opened = True
-                    break
-            except ReadOnlyViolation:
-                raise
-            except Exception:
-                continue
-        if opened:
-            break
-    if not opened:
-        log.warn(
-            "aba/filtro 'Tarefas' não localizado na ficha da empresa — lendo "
-            "os links de tarefas da linha do tempo da própria ficha"
-        )
-
-    tasks: dict = {}
-    stable_rounds = 0
-    for _ in range(300):
-        links = _collect_task_links(page)
-        before = len(tasks)
-        for link in links:
-            m = TASK_LINK_RE.search(link["href"])
-            if m:
-                tid = m.group(1)
-                title = re.sub(r"\s+", " ", link["text"]).strip()
-                if tid not in tasks:
-                    tasks[tid] = {"title": title, "url": link["href"]}
-                elif title and not tasks[tid]["title"]:
-                    tasks[tid]["title"] = title
-
-        if len(tasks) == before:
-            stable_rounds += 1
-        else:
-            stable_rounds = 0
-            print(f"  … {len(tasks)} tarefas vinculadas encontradas")
-        if stable_rounds >= 3:
-            break
-
-        clicked = _click_load_more(page, log)
-        if not clicked:
-            page.mouse.wheel(0, 5000)
-            page.wait_for_timeout(1500)
-
-    # Fallback adicional: o histórico da ficha cita tarefas pelo NÚMERO
-    # (ex.: "Tarefa nº 1234") nem sempre com link. Capturamos esses números
-    # do texto (de todos os frames) e montamos a URL de visualização. Cada
-    # tarefa é depois verificada pelo campo CRM, então números capturados
-    # por engano são descartados com aviso.
-    body = _all_frames_text(page)
-    mentioned = set(re.findall(
-        r"tarefa\s*(?:n[oº°]?\.?|#|№)?\s*(\d{1,7})\b",
-        _strip_accents(body.lower()),
-    ))
-    new_ids = [tid for tid in mentioned if tid not in tasks]
-    if new_ids:
-        uid = _current_user_id(page)
-        if uid:
-            for tid in sorted(new_ids, key=int):
-                tasks[tid] = {
-                    "title": "",
-                    "url": (f"{config.BASE_URL}/company/personal/user/{uid}"
-                            f"/tasks/task/view/{tid}/"),
-                }
-            print(f"  + {len(new_ids)} tarefa(s) citadas por número no "
-                  "histórico (serão verificadas pelo campo CRM)")
-        else:
-            log.warn(
-                f"{len(new_ids)} número(s) de tarefa citados no histórico "
-                "não puderam ser abertos (ID do usuário atual não detectado)"
-            )
-
-    if not tasks:
-        log.warn(
-            "Nenhum link ou número de tarefa encontrado na ficha da empresa. "
-            "Verifique se o histórico/aba 'Tarefas' contém as tarefas e se o "
-            "campo CRM delas aponta para essa empresa."
-        )
-    else:
-        print(f"  ✓ Total de tarefas coletadas na ficha da empresa: {len(tasks)}")
-    return tasks
-
-
-def _current_user_id(page) -> str | None:
-    """Lê o ID do usuário logado (só leitura, via JS da própria página)."""
-    for uid in _eval_frames(
-        page,
-        "() => (window.BX && BX.message && BX.message('USER_ID')) || null",
-    ):
-        if uid and str(uid).isdigit():
-            return str(uid)
-    for chunk in _eval_frames(
-        page,
-        "() => Array.from(document.querySelectorAll("
-        "\"a[href*='/company/personal/user/']\")).map(e => e.href)",
-    ):
-        for href in chunk:
-            m = re.search(r"/company/personal/user/(\d+)/", href)
-            if m and m.group(1) != "0":
-                return m.group(1)
-    return None
 
 
 def collect_tasks_by_search(page, log: GuardLog) -> dict:
@@ -875,39 +678,8 @@ def _extract_description_and_comments(page, task: Task) -> None:
                 continue
 
 
-def _verify_crm_link(page, company_id: str | None) -> str:
-    """
-    Verifica, na página de detalhe da tarefa, o vínculo com o cliente.
-    Retorna a evidência encontrada ("" = nenhum vínculo confirmado):
-    - link para a ficha da empresa (/crm/company/details/<ID>/)
-    - nome completo do cliente no texto da tarefa
-    - alguma das variações de nome (config.SEARCH_TERMS) no texto
-    """
-    if company_id:
-        for frame in _frames(page):
-            try:
-                n = frame.locator(
-                    f"a[href*='/crm/company/details/{company_id}/']"
-                ).count()
-                if n > 0:
-                    return f"campo CRM (empresa {company_id})"
-            except Exception:
-                continue
-    body = _strip_accents(_all_frames_text(page).lower())
-    target = _strip_accents(config.CLIENT_NAME.lower())
-    if target and target in body:
-        return "nome completo do cliente na tarefa"
-    if target[:20] and target[:20] in body:
-        return "início do nome do cliente na tarefa"
-    for term in config.SEARCH_TERMS:
-        t = _strip_accents(term.lower())
-        if t and t in body:
-            return f"variação de nome: '{term}'"
-    return ""
-
-
 def extract_task(page, task_id: str, fallback_title: str, task_url: str,
-                 log: GuardLog, expected_company_id: str | None = None) -> Task:
+                 log: GuardLog) -> Task:
     """Abre a página de detalhe da tarefa (por URL) e lê todos os campos."""
     task = Task(task_id=task_id, title=fallback_title)
     task.url = task_url
@@ -915,11 +687,6 @@ def extract_task(page, task_id: str, fallback_title: str, task_url: str,
     page.wait_for_timeout(3000)
     # o detalhe da tarefa também abre em slider/iframe — aguarda carregar
     _wait_for_slider(page)
-
-    # confirma o vínculo com o cliente (campo CRM ou variações de nome)
-    if expected_company_id is not None:
-        task.link_evidence = _verify_crm_link(page, expected_company_id)
-        task.crm_linked = bool(task.link_evidence)
 
     # título (o da página vence o texto parcial do link)
     page_title = ""

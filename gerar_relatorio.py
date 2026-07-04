@@ -4,15 +4,14 @@ Gera o relatório do cliente/projeto configurado em config.py (por padrão,
 "TEC SYSTEM SISTEMAS ELETRONICOS LTDA") extraindo dados do Bitrix24 pelo
 navegador, em modo ESTRITAMENTE SOMENTE LEITURA.
 
-As tarefas são localizadas pelo vínculo de CRM: o script abre a ficha da
-EMPRESA no CRM (aba "Tarefas") e extrai as tarefas vinculadas a ela.
-Alternativamente, use --group-id para o modo grupo/projeto.
+As tarefas são localizadas por PESQUISA GLOBAL por nome (variações de nome
+configuradas em config.SEARCH_TERMS). Alternativamente, use --group-id para
+o modo grupo/projeto.
 
 Pré-requisito: sessão salva com `python save_auth.py` (login manual).
 
 Uso:
-    python gerar_relatorio.py [--headed] [--company-id N] [--group-id N]
-                              [--max-tasks N]
+    python gerar_relatorio.py [--headed] [--group-id N] [--max-tasks N]
 
 Saída: relatorios/relatorio_AAAA-MM-DD.md e relatorios/tarefas_AAAA-MM-DD.csv
 """
@@ -29,8 +28,7 @@ from bitrix_readonly.auth import SessionExpired, check_session, require_auth_fil
 from bitrix_readonly.guard import GuardLog, ReadOnlyViolation, install_network_guard
 from bitrix_readonly.report import build_report, previous_month_range
 from bitrix_readonly.scraper import (
-    collect_task_ids, collect_tasks_by_search, collect_tasks_from_company,
-    extract_task, find_company_id, find_group_id,
+    collect_task_ids, collect_tasks_by_search, extract_task, find_group_id,
 )
 
 
@@ -38,8 +36,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headed", action="store_true",
                         help="mostra a janela do navegador durante a execução")
-    parser.add_argument("--company-id", default=None,
-                        help="ID da empresa no CRM (/crm/company/details/<ID>/)")
     parser.add_argument("--group-id", default=None,
                         help="modo alternativo: ID do grupo/projeto no Bitrix24")
     parser.add_argument("--max-tasks", type=int, default=None,
@@ -49,8 +45,6 @@ def main() -> int:
                              "relatorios/debug/ para diagnóstico")
     args = parser.parse_args()
 
-    if args.company_id:
-        config.COMPANY_ID = str(args.company_id)
     if args.group_id:
         config.GROUP_ID = str(args.group_id)
     if args.max_tasks is not None:
@@ -93,22 +87,15 @@ def main() -> int:
             check_session(page)
             print("✓ Sessão autenticada válida (nenhuma credencial usada).")
 
-            # 2) localizar o cliente e coletar as tarefas vinculadas
-            company_id = None
-            if args.group_id or (config.GROUP_ID and not config.COMPANY_ID):
+            # 2) coletar as tarefas
+            if args.group_id or config.GROUP_ID:
                 # modo alternativo: grupo/projeto
                 group_id = find_group_id(page, log)
                 task_index = collect_task_ids(page, group_id, log)
             else:
-                # modo padrão: ficha da empresa no CRM + pesquisa global
-                # pelas variações de nome (TEC SYSTEM, TECSYSTEM, TS TELECOM…)
-                company_id = find_company_id(page, log)
-                task_index = collect_tasks_from_company(page, company_id, log)
-                for tid, info in collect_tasks_by_search(page, log).items():
-                    if tid not in task_index:
-                        task_index[tid] = info
-                print(f"→ Total combinado (ficha CRM + pesquisa): "
-                      f"{len(task_index)} tarefa(s)")
+                # modo padrão: pesquisa global pelas variações de nome
+                # (TEC SYSTEM, TECSYSTEM, TS TELECOM…)
+                task_index = collect_tasks_by_search(page, log)
 
             if args.debug or not task_index:
                 dbg_dir = os.path.join(config.OUTPUT_DIR, "debug")
@@ -140,22 +127,14 @@ def main() -> int:
                 )
                 ids = ids[: config.MAX_TASKS]
 
-            # 4) abrir o detalhe de cada tarefa (navegação por URL), conferir
-            #    o vínculo com o cliente (campo CRM) e extrair os campos
+            # 3) abrir o detalhe de cada tarefa (navegação por URL) e extrair os campos
             tasks = []
             for i, (tid, info) in enumerate(ids, 1):
                 title, url = info["title"], info["url"]
                 print(f"→ [{i}/{len(ids)}] tarefa {tid} — {title[:60]}")
                 try:
-                    t = extract_task(
-                        page, tid, title, url, log,
-                        expected_company_id=company_id,
-                    )
+                    t = extract_task(page, tid, title, url, log)
                     tasks.append(t)
-                    if company_id is not None:
-                        mark = "✓" if t.crm_linked else "✗"
-                        print(f"   {mark} vínculo: "
-                              f"{t.link_evidence or 'não confirmado'}")
                 except ReadOnlyViolation:
                     raise
                 except Exception as e:
@@ -186,19 +165,7 @@ def main() -> int:
               "mensagem acima e o conteúdo de relatorios\\debug\\.")
         return 1
 
-    # 5) TODAS as tarefas coletadas entram no relatório, com a coluna
-    #    "Vínculo" indicando como a relação com o cliente foi (ou não)
-    #    confirmada — a triagem final é do usuário.
-    if company_id is not None:
-        sem_vinculo = sum(1 for t in tasks if not t.crm_linked)
-        if sem_vinculo:
-            print(
-                f"\nℹ️  {sem_vinculo} tarefa(s) sem vínculo confirmado foram "
-                "INCLUÍDAS no relatório, marcadas na coluna 'Vínculo' para "
-                "você revisar e excluir o que não fizer sentido."
-            )
-
-    # 6) relatório
+    # 4) gerar relatório
     result = build_report(tasks, log, today)
 
     print("\n" + "=" * 70)

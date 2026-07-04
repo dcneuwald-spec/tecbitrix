@@ -134,13 +134,6 @@ def _fmt_date(d: date | None) -> str:
     return d.strftime("%d/%m/%Y") if d else "—"
 
 
-def _link_label(t: Task) -> str:
-    """Rótulo curto da coluna 'Vínculo' com o cliente."""
-    if t.crm_linked is None:
-        return "—"
-    if t.crm_linked:
-        return t.link_evidence or "confirmado"
-    return "⚠️ NÃO confirmado"
 
 
 def build_report(tasks: list, log: GuardLog, today: date | None = None) -> dict:
@@ -217,28 +210,22 @@ def build_report(tasks: list, log: GuardLog, today: date | None = None) -> dict:
     lines.append(
         f"| Tarefas aguardando ação SEM horas apontadas | **{len(critical)}** |"
     )
-    sem_vinculo = sum(1 for t in in_scope if t.crm_linked is False)
-    if sem_vinculo:
-        lines.append(
-            f"| ⚠️ Tarefas sem vínculo confirmado (revisar) | {sem_vinculo} |"
-        )
     lines.append("")
 
     lines.append("## 2. Tabela de tarefas (ano completo até hoje)")
     lines.append("")
     lines.append(
-        "| ID | Título | Vínculo | Status | Responsável | Criação | Prazo "
+        "| ID | Título | Status | Responsável | Criação | Prazo "
         f"| Conclusão | Horas totais | Horas {pm_label} | Resumo da atividade |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for t, label, prev_secs in sorted(
         rows, key=lambda r: (r[0].created or date.min), reverse=True
     ):
         def esc(s: str) -> str:
             return (s or "").replace("|", "\\|")
         lines.append(
-            f"| {t.task_id} | {esc(t.title)} | {esc(_link_label(t))} "
-            f"| {label} | {esc(t.responsible) or '—'} "
+            f"| {t.task_id} | {esc(t.title)} | {label} | {esc(t.responsible) or '—'} "
             f"| {_fmt_date(t.created)} | {_fmt_date(t.deadline)} "
             f"| {_fmt_date(t.closed)} | {format_hours(t.total_seconds)} "
             f"| {format_hours(prev_secs)} | {esc(activity_summary(t))} |"
@@ -306,13 +293,13 @@ def build_report(tasks: list, log: GuardLog, today: date | None = None) -> dict:
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, delimiter=";")
         writer.writerow([
-            "ID", "Título", "Vínculo", "Status", "Responsável",
+            "ID", "Título", "Status", "Responsável",
             "Data de criação", "Prazo", "Data de conclusão", "Horas totais",
             f"Horas {pm_label}", "Resumo da atividade", "URL",
         ])
         for t, label, prev_secs in rows:
             writer.writerow([
-                t.task_id, t.title, _link_label(t), label, t.responsible,
+                t.task_id, t.title, label, t.responsible,
                 _fmt_date(t.created), _fmt_date(t.deadline),
                 _fmt_date(t.closed), format_hours(t.total_seconds),
                 format_hours(prev_secs), activity_summary(t), t.url,
