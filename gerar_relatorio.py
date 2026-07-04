@@ -38,6 +38,10 @@ def main() -> int:
                         help="mostra a janela do navegador durante a execução")
     parser.add_argument("--group-id", default=None,
                         help="modo alternativo: ID do grupo/projeto no Bitrix24")
+    parser.add_argument("--tasks-list-url", default=None,
+                        help="URL da lista geral de tarefas usada para o "
+                             "filtro por nome (se as URLs padrão não "
+                             "funcionarem neste portal)")
     parser.add_argument("--max-tasks", type=int, default=None,
                         help="limita o nº de tarefas processadas (para testes)")
     parser.add_argument("--debug", action="store_true",
@@ -47,6 +51,8 @@ def main() -> int:
 
     if args.group_id:
         config.GROUP_ID = str(args.group_id)
+    if args.tasks_list_url:
+        config.TASKS_LIST_URL = args.tasks_list_url
     if args.max_tasks is not None:
         config.MAX_TASKS = args.max_tasks
     headless = config.HEADLESS and not args.headed

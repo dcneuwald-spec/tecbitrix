@@ -5,17 +5,27 @@ Automação com **Playwright + Chrome** que acessa o Bitrix24
 extrai os dados do cliente **TEC SYSTEM SISTEMAS ELETRONICOS LTDA**
 para gerar um relatório de tarefas e horas.
 
-As tarefas são localizadas por **pesquisa global pelo nome do cliente**: o
-script navega para `/search/?q=<termo>` com cada variação de nome
-configurada (`config.SEARCH_TERMS` — ex.: TEC SYSTEM, TECSYSTEM, TECH
-SYSTEM, TS TELECOM) e coleta os links de tarefas encontrados nos
-resultados. (Há também um modo alternativo por grupo/projeto, via
-`--group-id`.)
+As tarefas são localizadas pelo **NOME do cliente**, combinando duas fontes:
+
+1. **Filtro de texto da lista de tarefas** (fonte principal) — abre uma
+   lista geral de tarefas e preenche o campo de busca/filtro embutido do
+   Bitrix com cada variação de nome (`config.SEARCH_TERMS` — ex.: TEC
+   SYSTEM, TECSYSTEM, TECH SYSTEM, TS TELECOM). É um recurso padrão de
+   qualquer portal Bitrix24, ao contrário da pesquisa global.
+2. **Pesquisa global** (`/search/?q=<termo>`) — usada como fonte
+   adicional quando essa rota existir no portal. Se ela retornar erro
+   (ex.: 404), é pulada automaticamente sem repetir o erro para cada termo.
+
+(Há também um modo alternativo por grupo/projeto, via `--group-id`.)
 
 Cada termo tem um tempo máximo de busca (`SEARCH_TERM_TIMEOUT_S`, padrão
 40s) e, se não encontrar nenhuma tarefa, o script salva automaticamente um
 screenshot + texto da página em `relatorios/debug/busca_<termo>.png/.txt`
 para diagnóstico — mesmo sem a flag `--debug`.
+
+Se as URLs padrão da lista de tarefas não funcionarem no seu portal, abra a
+lista manualmente no Bitrix, copie a URL da barra de endereço e use
+`--tasks-list-url <url>` (ou `BITRIX_TASKS_LIST_URL=<url>`).
 
 > Esta versão usa automação de **navegador** (Playwright), conforme
 > solicitado — **não** usa API REST nem webhooks do Bitrix24.
@@ -84,15 +94,17 @@ python save_auth.py
 python gerar_relatorio.py
 
 # Opções úteis
-python gerar_relatorio.py --headed          # com janela visível
-python gerar_relatorio.py --group-id 456    # modo alternativo: grupo/projeto
-python gerar_relatorio.py --max-tasks 5     # execução de teste com poucas tarefas
-python gerar_relatorio.py --debug           # salva diagnóstico em relatorios/debug/
+python gerar_relatorio.py --headed                     # com janela visível
+python gerar_relatorio.py --group-id 456               # modo alternativo: grupo/projeto
+python gerar_relatorio.py --tasks-list-url <url>        # URL certa da lista de tarefas
+python gerar_relatorio.py --max-tasks 5                # execução de teste com poucas tarefas
+python gerar_relatorio.py --debug                      # salva diagnóstico em relatorios/debug/
 ```
 
 Configurações (nome do cliente, termos de busca, URL, timeouts…) ficam em
 `config.py` e podem ser sobrescritas por variáveis de ambiente
-(`BITRIX_SEARCH_TERMS`, `BITRIX_CLIENT_NAME`, `BITRIX_HEADLESS=0`, …).
+(`BITRIX_SEARCH_TERMS`, `BITRIX_TASKS_LIST_URL`, `BITRIX_CLIENT_NAME`,
+`BITRIX_HEADLESS=0`, …).
 
 > **Dica:** se a pesquisa por nome não encontrar as tarefas certas, ajuste
 > as variações de nome em `BITRIX_SEARCH_TERMS` (separadas por vírgula) ou

@@ -21,8 +21,9 @@ CLIENT_NAME = os.environ.get(
 _gid = os.environ.get("BITRIX_GROUP_ID", "").strip()
 GROUP_ID = _gid or None
 
-# Termos usados na PESQUISA GLOBAL do Bitrix para achar tarefas do cliente.
-# Separar por vírgula em BITRIX_SEARCH_TERMS.
+# Termos usados na busca por nome do cliente (filtro da lista de tarefas
+# e/ou pesquisa global, quando disponível). Separar por vírgula em
+# BITRIX_SEARCH_TERMS.
 _terms = os.environ.get(
     "BITRIX_SEARCH_TERMS",
     "TEC SYSTEM,TECSYSTEM,TEC-SYSTEM,TECH SYSTEM,TS TELECOM",
@@ -32,6 +33,14 @@ SEARCH_TERMS = [t.strip() for t in _terms.split(",") if t.strip()]
 # Tempo máximo (segundos) gasto rolando/paginando os resultados de UM termo
 # de pesquisa antes de seguir para o próximo — evita loops longos e silenciosos.
 SEARCH_TERM_TIMEOUT_S = float(os.environ.get("BITRIX_SEARCH_TERM_TIMEOUT_S", "40"))
+
+# URL da lista GERAL de tarefas (não filtrada por grupo/projeto), usada para
+# aplicar o filtro de texto embutido do Bitrix e localizar tarefas pelo nome
+# do cliente. Se vazio, o script tenta algumas URLs candidatas comuns; se
+# nenhuma funcionar nesse portal, informe a URL correta aqui (ou via
+# --tasks-list-url / BITRIX_TASKS_LIST_URL) — abra a lista de tarefas
+# manualmente no Bitrix e copie a URL da barra de endereço.
+TASKS_LIST_URL = os.environ.get("BITRIX_TASKS_LIST_URL", "").strip() or None
 
 # Arquivo de sessão autenticada gerado por save_auth.py.
 # SENSÍVEL: está no .gitignore e NUNCA deve ser commitado.
