@@ -2,8 +2,14 @@
 
 Automação com **Playwright + Chrome** que acessa o Bitrix24
 (`https://dutra.bitrix24.com.br/online/`) com uma sessão já autenticada e
-extrai os dados do projeto/cliente **TEC SYSTEM SISTEMAS ELETRONICOS LTDA**
+extrai os dados do cliente **TEC SYSTEM SISTEMAS ELETRONICOS LTDA**
 para gerar um relatório de tarefas e horas.
+
+As tarefas são localizadas pelo **vínculo de CRM**: o script encontra a
+empresa do cliente no CRM, abre a ficha dela
+(`/crm/company/details/<ID>/`), entra na aba **Tarefas** e extrai as
+tarefas vinculadas. (Há também um modo alternativo por grupo/projeto,
+via `--group-id`.)
 
 > Esta versão usa automação de **navegador** (Playwright), conforme
 > solicitado — **não** usa API REST nem webhooks do Bitrix24.
@@ -24,10 +30,11 @@ edita, conclui, move ou exclui nada. Duas camadas de proteção garantem isso:
    correspondência — ou dúvida —, o script **não clica**, interrompe a
    execução e reporta o motivo ao usuário (`ReadOnlyViolation`).
 
-Além disso, **nenhum filtro é salvo no Bitrix**: o script carrega a lista de
-tarefas do grupo (rolagem/paginação, que são ações de navegação) e aplica os
-recortes de período **localmente, em Python**. A abertura do detalhe de cada
-tarefa é feita **por URL direta** (navegação), não por botões de ação.
+Além disso, **nenhum filtro é salvo no Bitrix**: o script lê a lista de
+tarefas vinculadas à empresa na ficha do CRM (rolagem/paginação e troca de
+aba, que são ações de navegação) e aplica os recortes de período
+**localmente, em Python**. A abertura do detalhe de cada tarefa é feita
+**por URL direta** (navegação), não por botões de ação.
 
 ## 🔑 Autenticação — sem senha no código
 
@@ -60,16 +67,18 @@ python gerar_relatorio.py
 
 # Opções úteis
 python gerar_relatorio.py --headed          # com janela visível
-python gerar_relatorio.py --group-id 123    # pula a busca do projeto pelo nome
+python gerar_relatorio.py --company-id 123  # pula a busca da empresa pelo nome
+python gerar_relatorio.py --group-id 456    # modo alternativo: grupo/projeto
 python gerar_relatorio.py --max-tasks 5     # execução de teste com poucas tarefas
 ```
 
 Configurações (nome do cliente, URL, timeouts…) ficam em `config.py` e podem
-ser sobrescritas por variáveis de ambiente (`BITRIX_GROUP_ID`,
+ser sobrescritas por variáveis de ambiente (`BITRIX_COMPANY_ID`,
 `BITRIX_CLIENT_NAME`, `BITRIX_HEADLESS=0`, …).
 
-> **Dica:** para acelerar e evitar ambiguidades, abra o projeto no Bitrix,
-> copie o número da URL `/workgroups/group/<ID>/` e use `--group-id <ID>`.
+> **Dica:** para acelerar e evitar ambiguidades, abra a empresa no CRM do
+> Bitrix, copie o número da URL `/crm/company/details/<ID>/` e use
+> `--company-id <ID>`.
 
 ## O que o relatório contém
 
@@ -110,7 +119,7 @@ gerar_relatorio.py           # entrada principal
 bitrix_readonly/
   guard.py                   # guarda somente-leitura (rede + clique seguro)
   auth.py                    # validação de sessão / detecção de expiração
-  scraper.py                 # navegação e extração (grupo, lista, detalhe)
+  scraper.py                 # navegação e extração (CRM/empresa, lista, detalhe)
   report.py                  # períodos, tradução de status, MD + CSV
 ```
 
@@ -119,9 +128,9 @@ bitrix_readonly/
 - Seletores de UI do Bitrix24 mudam entre versões/idiomas. O extrator usa
   múltiplos fallbacks e busca por rótulos de texto (PT/EN); o que não puder
   ser lido vira **aviso** no relatório — o script não inventa dados.
-- Se a visão padrão do grupo estiver em Kanban/Prazos e nenhum link de tarefa
-  for encontrado, alterne manualmente para a visão **Lista** uma vez (isso é
-  uma preferência sua de visualização) e execute novamente.
+- A coleta considera as tarefas **vinculadas à empresa no campo CRM**
+  exibidas na aba "Tarefas" da ficha da empresa. Tarefas sem esse vínculo
+  não aparecem — nesse caso use o modo `--group-id`.
 - O detalhamento de horas por mês depende da lista de apontamentos exibida na
   página da tarefa; quando só o total agregado ("Tempo gasto") está visível,
   o total é usado e a coluna do mês anterior fica 0:00 com aviso.

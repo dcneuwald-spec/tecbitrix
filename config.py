@@ -15,10 +15,17 @@ CLIENT_NAME = os.environ.get(
     "BITRIX_CLIENT_NAME", "TEC SYSTEM SISTEMAS ELETRONICOS LTDA"
 )
 
-# ID numérico do grupo/projeto no Bitrix24 (opcional).
-# Se None, o script tenta localizar o grupo pelo nome na página /workgroups/.
-# Definir o ID (ex.: "123") torna a execução mais rápida e confiável:
-#   export BITRIX_GROUP_ID=123
+# ID numérico da EMPRESA no CRM (opcional). É o número na URL da ficha:
+#   https://dutra.bitrix24.com.br/crm/company/details/<ID>/
+# Se None, o script tenta localizar a empresa pelo nome na lista do CRM.
+# Definir o ID torna a execução mais rápida e confiável:
+#   set BITRIX_COMPANY_ID=123   (Windows)  |  export BITRIX_COMPANY_ID=123
+_cid = os.environ.get("BITRIX_COMPANY_ID", "").strip()
+COMPANY_ID = _cid or None
+
+# MODO ALTERNATIVO — grupo/projeto: ID numérico do grupo no Bitrix24.
+# Só é usado quando informado (--group-id ou BITRIX_GROUP_ID); caso
+# contrário o script trabalha no modo CRM (empresa) acima.
 _gid = os.environ.get("BITRIX_GROUP_ID", "").strip()
 GROUP_ID = _gid or None
 

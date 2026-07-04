@@ -2,9 +2,11 @@
 Extração somente-leitura de dados de tarefas do Bitrix24 via Playwright.
 
 Estratégia (100% leitura):
-1. Localizar o grupo/projeto do cliente pelo nome (ou usar GROUP_ID fixo).
-2. Abrir a lista de tarefas do grupo e carregar todas as páginas/itens
-   (rolagem + botão "mostrar mais", que é ação de navegação).
+1. Localizar a EMPRESA do cliente no CRM pelo nome (ou usar COMPANY_ID fixo)
+   e abrir a ficha dela (/crm/company/details/<ID>/). Alternativamente, o
+   modo grupo/projeto continua disponível via --group-id.
+2. Abrir a aba "Tarefas" da ficha da empresa (clique de leitura, validado
+   pela guarda) e carregar todos os itens (rolagem + "mostrar mais").
 3. Para cada tarefa, abrir a PÁGINA DE DETALHE por URL direta (navegação,
    não clique em botão de ação) e ler campos renderizados: título, status,
    responsável, datas, descrição, comentários e apontamentos de tempo.
@@ -164,7 +166,145 @@ def format_hours(seconds: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Localização do grupo/projeto
+# Localização da empresa no CRM
+# ---------------------------------------------------------------------------
+
+COMPANY_LINK_RE = re.compile(r"/crm/company/details/(\d+)/")
+
+
+def find_company_id(page, log: GuardLog) -> str:
+    """Encontra o ID da empresa do cliente na lista de empresas do CRM."""
+    if config.COMPANY_ID:
+        print(f"→ Usando COMPANY_ID configurado: {config.COMPANY_ID}")
+        return str(config.COMPANY_ID)
+
+    target = _strip_accents(config.CLIENT_NAME.lower())
+    print(f"→ Procurando a empresa '{config.CLIENT_NAME}' no CRM ...")
+
+    # A lista de empresas pode responder em /crm/company/ ou /crm/company/list/
+    for list_url in (f"{config.BASE_URL}/crm/company/list/",
+                     f"{config.BASE_URL}/crm/company/"):
+        try:
+            page.goto(list_url, wait_until="domcontentloaded")
+        except Exception:
+            continue
+        page.wait_for_timeout(4000)
+
+        stable_rounds = 0
+        seen = 0
+        for _ in range(60):  # rolagem para paginar a lista (leitura)
+            links = page.eval_on_selector_all(
+                "a[href*='/crm/company/details/']",
+                "els => els.map(e => ({href: e.href, "
+                "text: e.textContent || ''}))",
+            )
+            for link in links:
+                text = _strip_accents((link["text"] or "").lower())
+                if target in text:
+                    m = COMPANY_LINK_RE.search(link["href"])
+                    if m:
+                        print(f"  ✓ Empresa encontrada (ID {m.group(1)})")
+                        return m.group(1)
+            if len(links) == seen:
+                stable_rounds += 1
+                if stable_rounds >= 3:
+                    break
+            else:
+                stable_rounds = 0
+                seen = len(links)
+            page.mouse.wheel(0, 5000)
+            page.wait_for_timeout(1500)
+
+    raise RuntimeError(
+        f"Não foi possível localizar a empresa '{config.CLIENT_NAME}' na "
+        "lista do CRM. Abra a empresa manualmente no Bitrix, copie o número "
+        "da URL (/crm/company/details/<ID>/) e execute com "
+        "--company-id <ID> (ou BITRIX_COMPANY_ID=<ID>)."
+    )
+
+
+def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
+    """
+    Abre a ficha da empresa no CRM, entra na aba 'Tarefas' (leitura) e
+    retorna {task_id: {"title": ..., "url": ...}} com as tarefas vinculadas.
+    """
+    url = f"{config.BASE_URL}/crm/company/details/{company_id}/"
+    print(f"→ Abrindo ficha da empresa no CRM: {url}")
+    page.goto(url, wait_until="domcontentloaded")
+    page.wait_for_timeout(5000)
+
+    # A aba "Tarefas" da ficha CRM é apenas visualização. Tentamos seletores
+    # específicos de aba antes do texto genérico, para não confundir com o
+    # item "Tarefas" do menu lateral global (que navegaria para fora).
+    tab_selectors = [
+        "[data-tab-id*='task']",
+        ".ui-tabs-item:has-text('Tarefas')",
+        ".crm-entity-tab:has-text('Tarefas')",
+        "a[href*='#tab'][href*='task']",
+    ]
+    opened = False
+    for sel in tab_selectors:
+        try:
+            tab = page.locator(sel)
+            if tab.count() > 0 and tab.first.is_visible():
+                safe_click(tab.first, "abrir aba 'Tarefas' da empresa", log)
+                page.wait_for_timeout(4000)
+                opened = True
+                break
+        except ReadOnlyViolation:
+            raise
+        except Exception:
+            continue
+    if not opened:
+        log.warn(
+            "aba 'Tarefas' não localizada na ficha da empresa — tentando ler "
+            "links de tarefas visíveis na própria página (linha do tempo)"
+        )
+
+    tasks: dict = {}
+    stable_rounds = 0
+    for _ in range(300):
+        links = page.eval_on_selector_all(
+            "a[href*='/tasks/task/view/']",
+            "els => els.map(e => ({href: e.href, text: e.textContent || ''}))",
+        )
+        before = len(tasks)
+        for link in links:
+            m = TASK_LINK_RE.search(link["href"])
+            if m:
+                tid = m.group(1)
+                title = re.sub(r"\s+", " ", link["text"]).strip()
+                if tid not in tasks:
+                    tasks[tid] = {"title": title, "url": link["href"]}
+                elif title and not tasks[tid]["title"]:
+                    tasks[tid]["title"] = title
+
+        if len(tasks) == before:
+            stable_rounds += 1
+        else:
+            stable_rounds = 0
+            print(f"  … {len(tasks)} tarefas vinculadas encontradas")
+        if stable_rounds >= 3:
+            break
+
+        clicked = _click_load_more(page, log)
+        if not clicked:
+            page.mouse.wheel(0, 5000)
+            page.wait_for_timeout(1500)
+
+    if not tasks:
+        log.warn(
+            "Nenhum link de tarefa encontrado na ficha da empresa. Verifique "
+            "se a aba 'Tarefas' existe nessa ficha e se há tarefas com o "
+            "campo CRM apontando para essa empresa."
+        )
+    else:
+        print(f"  ✓ Total de tarefas vinculadas à empresa: {len(tasks)}")
+    return tasks
+
+
+# ---------------------------------------------------------------------------
+# Localização do grupo/projeto (modo alternativo, via --group-id)
 # ---------------------------------------------------------------------------
 
 def find_group_id(page, log: GuardLog) -> str:
@@ -221,9 +361,37 @@ MORE_BUTTON_SELECTORS = [
 MORE_BUTTON_TEXTS = ["mostrar mais", "carregar mais", "show more", "mais"]
 
 
+def _click_load_more(page, log: GuardLog) -> bool:
+    """Clica no botão de paginação 'mostrar mais', se houver (leitura)."""
+    for sel in MORE_BUTTON_SELECTORS:
+        btn = page.locator(sel)
+        try:
+            if btn.count() > 0 and btn.first.is_visible():
+                safe_click(btn.first, "carregar mais itens", log)
+                page.wait_for_timeout(2500)
+                return True
+        except ReadOnlyViolation:
+            raise
+        except Exception:
+            continue
+    for txt in MORE_BUTTON_TEXTS:
+        btn = page.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
+        try:
+            if btn.count() > 0 and btn.first.is_visible():
+                safe_click(btn.first, "carregar mais itens", log)
+                page.wait_for_timeout(2500)
+                return True
+        except ReadOnlyViolation:
+            raise
+        except Exception:
+            continue
+    return False
+
+
 def collect_task_ids(page, group_id: str, log: GuardLog) -> dict:
     """
-    Abre a lista de tarefas do grupo e retorna {task_id: título_parcial}.
+    Abre a lista de tarefas do grupo e retorna
+    {task_id: {"title": ..., "url": ...}}.
     Usa rolagem e o botão 'mostrar mais' (navegação) até a lista estabilizar.
     O recorte por data é feito depois, localmente — nenhum filtro é salvo
     no Bitrix.
@@ -246,8 +414,10 @@ def collect_task_ids(page, group_id: str, log: GuardLog) -> dict:
             if m:
                 tid = m.group(1)
                 title = re.sub(r"\s+", " ", link["text"]).strip()
-                if tid not in tasks or (title and not tasks[tid]):
-                    tasks[tid] = title
+                if tid not in tasks:
+                    tasks[tid] = {"title": title, "url": link["href"]}
+                elif title and not tasks[tid]["title"]:
+                    tasks[tid]["title"] = title
 
         if len(tasks) == before:
             stable_rounds += 1
@@ -258,36 +428,8 @@ def collect_task_ids(page, group_id: str, log: GuardLog) -> dict:
         if stable_rounds >= 3:
             break
 
-        # 1) tenta botão "mostrar mais" (paginação — leitura)
-        clicked = False
-        for sel in MORE_BUTTON_SELECTORS:
-            btn = page.locator(sel)
-            try:
-                if btn.count() > 0 and btn.first.is_visible():
-                    safe_click(btn.first, "carregar mais tarefas", log)
-                    page.wait_for_timeout(2500)
-                    clicked = True
-                    break
-            except ReadOnlyViolation:
-                raise
-            except Exception:
-                continue
-        if not clicked:
-            for txt in MORE_BUTTON_TEXTS:
-                btn = page.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
-                try:
-                    if btn.count() > 0 and btn.first.is_visible():
-                        safe_click(btn.first, "carregar mais tarefas", log)
-                        page.wait_for_timeout(2500)
-                        clicked = True
-                        break
-                except ReadOnlyViolation:
-                    raise
-                except Exception:
-                    continue
-
-        # 2) rolagem para acionar lazy-load
-        if not clicked:
+        # botão "mostrar mais" (paginação — leitura) ou rolagem (lazy-load)
+        if not _click_load_more(page, log):
             page.mouse.wheel(0, 5000)
             page.wait_for_timeout(1500)
 
@@ -499,14 +641,11 @@ def _extract_description_and_comments(page, task: Task) -> None:
             continue
 
 
-def extract_task(page, group_id: str, task_id: str, fallback_title: str,
+def extract_task(page, task_id: str, fallback_title: str, task_url: str,
                  log: GuardLog) -> Task:
     """Abre a página de detalhe da tarefa (por URL) e lê todos os campos."""
     task = Task(task_id=task_id, title=fallback_title)
-    task.url = (
-        f"{config.BASE_URL}/workgroups/group/{group_id}"
-        f"/tasks/task/view/{task_id}/"
-    )
+    task.url = task_url
     page.goto(task.url, wait_until="domcontentloaded")
     page.wait_for_timeout(3500)
 

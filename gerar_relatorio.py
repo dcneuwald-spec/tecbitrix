@@ -4,10 +4,15 @@ Gera o relatório do cliente/projeto configurado em config.py (por padrão,
 "TEC SYSTEM SISTEMAS ELETRONICOS LTDA") extraindo dados do Bitrix24 pelo
 navegador, em modo ESTRITAMENTE SOMENTE LEITURA.
 
+As tarefas são localizadas pelo vínculo de CRM: o script abre a ficha da
+EMPRESA no CRM (aba "Tarefas") e extrai as tarefas vinculadas a ela.
+Alternativamente, use --group-id para o modo grupo/projeto.
+
 Pré-requisito: sessão salva com `python save_auth.py` (login manual).
 
 Uso:
-    python gerar_relatorio.py [--headed] [--group-id N] [--max-tasks N]
+    python gerar_relatorio.py [--headed] [--company-id N] [--group-id N]
+                              [--max-tasks N]
 
 Saída: relatorios/relatorio_AAAA-MM-DD.md e relatorios/tarefas_AAAA-MM-DD.csv
 """
@@ -22,19 +27,26 @@ import config
 from bitrix_readonly.auth import SessionExpired, check_session, require_auth_file
 from bitrix_readonly.guard import GuardLog, ReadOnlyViolation, install_network_guard
 from bitrix_readonly.report import build_report, previous_month_range
-from bitrix_readonly.scraper import collect_task_ids, extract_task, find_group_id
+from bitrix_readonly.scraper import (
+    collect_task_ids, collect_tasks_from_company, extract_task,
+    find_company_id, find_group_id,
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headed", action="store_true",
                         help="mostra a janela do navegador durante a execução")
+    parser.add_argument("--company-id", default=None,
+                        help="ID da empresa no CRM (/crm/company/details/<ID>/)")
     parser.add_argument("--group-id", default=None,
-                        help="ID numérico do grupo/projeto no Bitrix24")
+                        help="modo alternativo: ID do grupo/projeto no Bitrix24")
     parser.add_argument("--max-tasks", type=int, default=None,
                         help="limita o nº de tarefas processadas (para testes)")
     args = parser.parse_args()
 
+    if args.company_id:
+        config.COMPANY_ID = str(args.company_id)
     if args.group_id:
         config.GROUP_ID = str(args.group_id)
     if args.max_tasks is not None:
@@ -77,11 +89,15 @@ def main() -> int:
             check_session(page)
             print("✓ Sessão autenticada válida (nenhuma credencial usada).")
 
-            # 2) localizar o projeto do cliente
-            group_id = find_group_id(page, log)
-
-            # 3) coletar todas as tarefas do grupo
-            task_index = collect_task_ids(page, group_id, log)
+            # 2) localizar o cliente e coletar as tarefas vinculadas
+            if args.group_id or (config.GROUP_ID and not config.COMPANY_ID):
+                # modo alternativo: grupo/projeto
+                group_id = find_group_id(page, log)
+                task_index = collect_task_ids(page, group_id, log)
+            else:
+                # modo padrão: empresa no CRM (campo CRM das tarefas)
+                company_id = find_company_id(page, log)
+                task_index = collect_tasks_from_company(page, company_id, log)
             if not task_index:
                 print("\n❌ Nenhuma tarefa encontrada — relatório não gerado.")
                 return 3
@@ -96,10 +112,11 @@ def main() -> int:
 
             # 4) abrir o detalhe de cada tarefa (navegação por URL) e extrair
             tasks = []
-            for i, (tid, title) in enumerate(ids, 1):
+            for i, (tid, info) in enumerate(ids, 1):
+                title, url = info["title"], info["url"]
                 print(f"→ [{i}/{len(ids)}] tarefa {tid} — {title[:60]}")
                 try:
-                    tasks.append(extract_task(page, group_id, tid, title, log))
+                    tasks.append(extract_task(page, tid, title, url, log))
                 except ReadOnlyViolation:
                     raise
                 except Exception as e:
