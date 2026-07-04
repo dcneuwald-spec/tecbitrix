@@ -59,6 +59,7 @@ class Task:
     warnings: list = field(default_factory=list)
     url: str = ""
     crm_linked: bool | None = None  # True/False após verificação; None = n/a
+    link_evidence: str = ""  # como o vínculo foi confirmado (CRM/nome/termo)
 
     @property
     def total_seconds(self) -> int:
@@ -422,6 +423,64 @@ def _current_user_id(page) -> str | None:
             if m and m.group(1) != "0":
                 return m.group(1)
     return None
+
+
+def collect_tasks_by_search(page, log: GuardLog) -> dict:
+    """
+    Usa a PESQUISA GLOBAL do Bitrix24 (navegação GET para /search/?q=...)
+    com as variações de nome do cliente (config.SEARCH_TERMS) e coleta os
+    links de tarefas dos resultados. 100% leitura: apenas navegação por URL
+    e rolagem — nada é digitado em formulários nem salvo.
+    """
+    from urllib.parse import quote
+
+    tasks: dict = {}
+    for term in config.SEARCH_TERMS:
+        url = f"{config.BASE_URL}/search/?q={quote(term)}"
+        print(f"→ Pesquisa global por '{term}': {url}")
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            log.warn(f"pesquisa global por '{term}' falhou ao abrir: {e}")
+            continue
+        page.wait_for_timeout(4000)
+        _wait_for_slider(page, 6000)
+
+        found_this_term = 0
+        stable_rounds = 0
+        for _ in range(100):
+            links = _collect_task_links(page)
+            before = len(tasks)
+            for link in links:
+                m = TASK_LINK_RE.search(link["href"])
+                if m:
+                    tid = m.group(1)
+                    title = re.sub(r"\s+", " ", link["text"]).strip()
+                    if tid not in tasks:
+                        tasks[tid] = {"title": title, "url": link["href"]}
+                        found_this_term += 1
+                    elif title and not tasks[tid]["title"]:
+                        tasks[tid]["title"] = title
+            if len(tasks) == before:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+            if stable_rounds >= 3:
+                break
+            if not _click_load_more(page, log):
+                page.mouse.wheel(0, 5000)
+                page.wait_for_timeout(1500)
+        print(f"  … '{term}': {found_this_term} tarefa(s) nova(s) nos resultados")
+
+    if tasks:
+        print(f"  ✓ Total de tarefas via pesquisa global: {len(tasks)}")
+    else:
+        log.warn(
+            "a pesquisa global não retornou links de tarefas para os termos "
+            f"{config.SEARCH_TERMS} — a página /search/ pode não estar "
+            "disponível neste portal"
+        )
+    return tasks
 
 
 # ---------------------------------------------------------------------------
@@ -807,11 +866,13 @@ def _extract_description_and_comments(page, task: Task) -> None:
                 continue
 
 
-def _verify_crm_link(page, company_id: str | None) -> bool:
+def _verify_crm_link(page, company_id: str | None) -> str:
     """
-    Confirma, na página de detalhe da tarefa, que ela está vinculada à
-    empresa do cliente: procura um link para /crm/company/details/<ID>/
-    ou o nome do cliente no texto da página.
+    Verifica, na página de detalhe da tarefa, o vínculo com o cliente.
+    Retorna a evidência encontrada ("" = nenhum vínculo confirmado):
+    - link para a ficha da empresa (/crm/company/details/<ID>/)
+    - nome completo do cliente no texto da tarefa
+    - alguma das variações de nome (config.SEARCH_TERMS) no texto
     """
     if company_id:
         for frame in _frames(page):
@@ -820,17 +881,20 @@ def _verify_crm_link(page, company_id: str | None) -> bool:
                     f"a[href*='/crm/company/details/{company_id}/']"
                 ).count()
                 if n > 0:
-                    return True
+                    return f"campo CRM (empresa {company_id})"
             except Exception:
                 continue
     body = _strip_accents(_all_frames_text(page).lower())
     target = _strip_accents(config.CLIENT_NAME.lower())
     if target and target in body:
-        return True
-    # também aceita um prefixo razoável do nome (cadastros abreviados)
+        return "nome completo do cliente na tarefa"
     if target[:20] and target[:20] in body:
-        return True
-    return False
+        return "início do nome do cliente na tarefa"
+    for term in config.SEARCH_TERMS:
+        t = _strip_accents(term.lower())
+        if t and t in body:
+            return f"variação de nome: '{term}'"
+    return ""
 
 
 def extract_task(page, task_id: str, fallback_title: str, task_url: str,
@@ -843,9 +907,10 @@ def extract_task(page, task_id: str, fallback_title: str, task_url: str,
     # o detalhe da tarefa também abre em slider/iframe — aguarda carregar
     _wait_for_slider(page)
 
-    # confirma o vínculo com o cliente (campo CRM da tarefa)
+    # confirma o vínculo com o cliente (campo CRM ou variações de nome)
     if expected_company_id is not None:
-        task.crm_linked = _verify_crm_link(page, expected_company_id)
+        task.link_evidence = _verify_crm_link(page, expected_company_id)
+        task.crm_linked = bool(task.link_evidence)
 
     # título (o da página vence o texto parcial do link)
     page_title = ""

@@ -29,8 +29,8 @@ from bitrix_readonly.auth import SessionExpired, check_session, require_auth_fil
 from bitrix_readonly.guard import GuardLog, ReadOnlyViolation, install_network_guard
 from bitrix_readonly.report import build_report, previous_month_range
 from bitrix_readonly.scraper import (
-    collect_task_ids, collect_tasks_from_company, extract_task,
-    find_company_id, find_group_id,
+    collect_task_ids, collect_tasks_by_search, collect_tasks_from_company,
+    extract_task, find_company_id, find_group_id,
 )
 
 
@@ -100,9 +100,15 @@ def main() -> int:
                 group_id = find_group_id(page, log)
                 task_index = collect_task_ids(page, group_id, log)
             else:
-                # modo padrão: empresa no CRM (campo CRM das tarefas)
+                # modo padrão: ficha da empresa no CRM + pesquisa global
+                # pelas variações de nome (TEC SYSTEM, TECSYSTEM, TS TELECOM…)
                 company_id = find_company_id(page, log)
                 task_index = collect_tasks_from_company(page, company_id, log)
+                for tid, info in collect_tasks_by_search(page, log).items():
+                    if tid not in task_index:
+                        task_index[tid] = info
+                print(f"→ Total combinado (ficha CRM + pesquisa): "
+                      f"{len(task_index)} tarefa(s)")
 
             if args.debug or not task_index:
                 dbg_dir = os.path.join(config.OUTPUT_DIR, "debug")
@@ -141,10 +147,15 @@ def main() -> int:
                 title, url = info["title"], info["url"]
                 print(f"→ [{i}/{len(ids)}] tarefa {tid} — {title[:60]}")
                 try:
-                    tasks.append(extract_task(
+                    t = extract_task(
                         page, tid, title, url, log,
                         expected_company_id=company_id,
-                    ))
+                    )
+                    tasks.append(t)
+                    if company_id is not None:
+                        mark = "✓" if t.crm_linked else "✗"
+                        print(f"   {mark} vínculo: "
+                              f"{t.link_evidence or 'não confirmado'}")
                 except ReadOnlyViolation:
                     raise
                 except Exception as e:
@@ -164,22 +175,16 @@ def main() -> int:
         print(f"\n❌ {e}")
         return 2
 
-    # 5) mantém apenas tarefas com vínculo confirmado com o cliente (modo CRM)
+    # 5) TODAS as tarefas coletadas entram no relatório, com a coluna
+    #    "Vínculo" indicando como a relação com o cliente foi (ou não)
+    #    confirmada — a triagem final é do usuário.
     if company_id is not None:
-        linked = [t for t in tasks if t.crm_linked]
-        dropped = [t for t in tasks if not t.crm_linked]
-        for t in dropped:
-            log.warn(
-                f"tarefa {t.task_id} ({t.title[:50]}) descartada: não foi "
-                "possível confirmar o vínculo com o cliente no campo CRM"
-            )
-        if linked:
-            tasks = linked
-        elif dropped:
+        sem_vinculo = sum(1 for t in tasks if not t.crm_linked)
+        if sem_vinculo:
             print(
-                "\n⚠️  Nenhuma tarefa teve o vínculo com o cliente confirmado "
-                "no campo CRM. Nada foi descartado para não gerar relatório "
-                "vazio — confira os avisos no relatório e rode com --debug."
+                f"\nℹ️  {sem_vinculo} tarefa(s) sem vínculo confirmado foram "
+                "INCLUÍDAS no relatório, marcadas na coluna 'Vínculo' para "
+                "você revisar e excluir o que não fizer sentido."
             )
 
     # 6) relatório

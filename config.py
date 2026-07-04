@@ -29,6 +29,14 @@ COMPANY_ID = _cid or "639"
 _gid = os.environ.get("BITRIX_GROUP_ID", "").strip()
 GROUP_ID = _gid or None
 
+# Termos usados na PESQUISA GLOBAL do Bitrix para achar tarefas do cliente
+# (além da ficha CRM). Separar por vírgula em BITRIX_SEARCH_TERMS.
+_terms = os.environ.get(
+    "BITRIX_SEARCH_TERMS",
+    "TEC SYSTEM,TECSYSTEM,TEC-SYSTEM,TS TELECOM",
+)
+SEARCH_TERMS = [t.strip() for t in _terms.split(",") if t.strip()]
+
 # Arquivo de sessão autenticada gerado por save_auth.py.
 # SENSÍVEL: está no .gitignore e NUNCA deve ser commitado.
 AUTH_FILE = os.environ.get("BITRIX_AUTH_FILE", "auth.json")
