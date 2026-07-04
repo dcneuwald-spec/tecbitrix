@@ -1,0 +1,19 @@
+# SESSÃO AUTENTICADA — NUNCA COMMITAR (contém cookies de acesso ao Bitrix24)
+auth.json
+*.auth.json
+storage_state*.json
+
+# Saídas geradas
+relatorios/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Playwright
+playwright-report/
+test-results/
