@@ -104,16 +104,23 @@ def main() -> int:
                 company_id = find_company_id(page, log)
                 task_index = collect_tasks_from_company(page, company_id, log)
 
-            if args.debug:
+            if args.debug or not task_index:
                 dbg_dir = os.path.join(config.OUTPUT_DIR, "debug")
                 os.makedirs(dbg_dir, exist_ok=True)
-                page.screenshot(path=os.path.join(dbg_dir, "coleta.png"),
-                                full_page=True)
+                try:
+                    page.screenshot(path=os.path.join(dbg_dir, "coleta.png"),
+                                    full_page=True)
+                except Exception:
+                    pass
                 with open(os.path.join(dbg_dir, "links.txt"), "w",
                           encoding="utf-8") as f:
+                    f.write("== FRAMES DA PÁGINA ==\n")
+                    for fr in page.frames:
+                        f.write(f"frame: {fr.url}\n")
+                    f.write("\n== TAREFAS COLETADAS ==\n")
                     for tid, info in task_index.items():
                         f.write(f"{tid}\t{info['title']}\t{info['url']}\n")
-                print(f"  🐞 debug salvo em {dbg_dir}/")
+                print(f"  🐞 debug salvo em {dbg_dir}/ (coleta.png, links.txt)")
 
             if not task_index:
                 print("\n❌ Nenhuma tarefa encontrada — relatório não gerado.")

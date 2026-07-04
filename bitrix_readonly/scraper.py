@@ -167,6 +167,67 @@ def format_hours(seconds: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Suporte a frames: o Bitrix24 renderiza fichas do CRM e detalhes de tarefa
+# dentro de IFRAMES (slider lateral). Toda leitura precisa varrer o documento
+# principal E os iframes — só o documento principal quase nunca tem o dado.
+# ---------------------------------------------------------------------------
+
+def _frames(page) -> list:
+    """Todos os frames da página (documento principal + iframes do slider)."""
+    try:
+        frames = list(page.frames)
+    except Exception:
+        frames = []
+    return frames or [page.main_frame]
+
+
+def _eval_frames(page, js: str, arg=None) -> list:
+    """Executa o JS (somente leitura) em cada frame e agrega os resultados."""
+    results = []
+    for frame in _frames(page):
+        try:
+            r = frame.evaluate(js, arg) if arg is not None else frame.evaluate(js)
+            if r:
+                results.append(r)
+        except Exception:
+            continue
+    return results
+
+
+def _all_frames_text(page) -> str:
+    """Texto visível concatenado de todos os frames."""
+    parts = _eval_frames(
+        page, "() => (document.body && document.body.innerText) || ''"
+    )
+    return "\n".join(p for p in parts if isinstance(p, str))
+
+
+def _wait_for_slider(page, timeout_ms: int = 12000) -> None:
+    """
+    Aguarda o conteúdo real carregar: se a página abriu um slider/iframe,
+    espera o iframe ganhar corpo com texto (apenas espera — nada é clicado).
+    """
+    waited = 0
+    step = 1000
+    while waited < timeout_ms:
+        for frame in _frames(page):
+            try:
+                if frame == page.main_frame:
+                    continue
+                n = frame.evaluate(
+                    "() => (document.body && "
+                    "document.body.innerText.trim().length) || 0"
+                )
+                if n and n > 200:
+                    page.wait_for_timeout(1000)
+                    return
+            except Exception:
+                continue
+        page.wait_for_timeout(step)
+        waited += step
+
+
+# ---------------------------------------------------------------------------
 # Localização da empresa no CRM
 # ---------------------------------------------------------------------------
 
@@ -194,11 +255,14 @@ def find_company_id(page, log: GuardLog) -> str:
         stable_rounds = 0
         seen = 0
         for _ in range(60):  # rolagem para paginar a lista (leitura)
-            links = page.eval_on_selector_all(
-                "a[href*='/crm/company/details/']",
-                "els => els.map(e => ({href: e.href, "
-                "text: e.textContent || ''}))",
-            )
+            links = []
+            for chunk in _eval_frames(
+                page,
+                "() => Array.from(document.querySelectorAll("
+                "\"a[href*='/crm/company/details/']\")).map(e => "
+                "({href: e.href, text: e.textContent || ''}))",
+            ):
+                links.extend(chunk)
             for link in links:
                 text = _strip_accents((link["text"] or "").lower())
                 if target in text:
@@ -232,7 +296,9 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
     url = f"{config.BASE_URL}/crm/company/details/{company_id}/"
     print(f"→ Abrindo ficha da empresa no CRM: {url}")
     page.goto(url, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(4000)
+    # a ficha abre num slider/iframe — aguarda o conteúdo real aparecer
+    _wait_for_slider(page)
 
     # A aba/filtro "Tarefas" da ficha CRM é apenas visualização. Tentamos
     # seletores específicos (aba da ficha e filtro da linha do tempo) antes
@@ -250,17 +316,21 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
     ]
     opened = False
     for sel in tab_selectors:
-        try:
-            tab = page.locator(sel)
-            if tab.count() > 0 and tab.first.is_visible():
-                safe_click(tab.first, f"abrir visão 'Tarefas' da empresa ({sel})", log)
-                page.wait_for_timeout(4000)
-                opened = True
-                break
-        except ReadOnlyViolation:
-            raise
-        except Exception:
-            continue
+        for frame in _frames(page):
+            try:
+                tab = frame.locator(sel)
+                if tab.count() > 0 and tab.first.is_visible():
+                    safe_click(tab.first,
+                               f"abrir visão 'Tarefas' da empresa ({sel})", log)
+                    page.wait_for_timeout(4000)
+                    opened = True
+                    break
+            except ReadOnlyViolation:
+                raise
+            except Exception:
+                continue
+        if opened:
+            break
     if not opened:
         log.warn(
             "aba/filtro 'Tarefas' não localizado na ficha da empresa — lendo "
@@ -297,13 +367,10 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
 
     # Fallback adicional: o histórico da ficha cita tarefas pelo NÚMERO
     # (ex.: "Tarefa nº 1234") nem sempre com link. Capturamos esses números
-    # do texto e montamos a URL de visualização. Cada tarefa é depois
-    # verificada pelo campo CRM, então números capturados por engano são
-    # descartados com aviso.
-    try:
-        body = page.evaluate("() => document.body.innerText || ''")
-    except Exception:
-        body = ""
+    # do texto (de todos os frames) e montamos a URL de visualização. Cada
+    # tarefa é depois verificada pelo campo CRM, então números capturados
+    # por engano são descartados com aviso.
+    body = _all_frames_text(page)
     mentioned = set(re.findall(
         r"tarefa\s*(?:n[oº°]?\.?|#|№)?\s*(\d{1,7})\b",
         _strip_accents(body.lower()),
@@ -339,25 +406,21 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
 
 def _current_user_id(page) -> str | None:
     """Lê o ID do usuário logado (só leitura, via JS da própria página)."""
-    try:
-        uid = page.evaluate(
-            "() => (window.BX && BX.message && BX.message('USER_ID')) || null"
-        )
+    for uid in _eval_frames(
+        page,
+        "() => (window.BX && BX.message && BX.message('USER_ID')) || null",
+    ):
         if uid and str(uid).isdigit():
             return str(uid)
-    except Exception:
-        pass
-    try:
-        links = page.eval_on_selector_all(
-            "a[href*='/company/personal/user/']",
-            "els => els.map(e => e.href)",
-        )
-        for href in links:
+    for chunk in _eval_frames(
+        page,
+        "() => Array.from(document.querySelectorAll("
+        "\"a[href*='/company/personal/user/']\")).map(e => e.href)",
+    ):
+        for href in chunk:
             m = re.search(r"/company/personal/user/(\d+)/", href)
             if m and m.group(1) != "0":
                 return m.group(1)
-    except Exception:
-        pass
     return None
 
 
@@ -376,11 +439,16 @@ def find_group_id(page, log: GuardLog) -> str:
     page.goto(f"{config.BASE_URL}/workgroups/", wait_until="domcontentloaded")
     page.wait_for_timeout(4000)
 
+    prev_count = -1
     for _ in range(30):  # rolagem para carregar a lista completa
-        links = page.eval_on_selector_all(
-            "a[href*='/workgroups/group/']",
-            "els => els.map(e => ({href: e.href, text: e.textContent || ''}))",
-        )
+        links = []
+        for chunk in _eval_frames(
+            page,
+            "() => Array.from(document.querySelectorAll("
+            "\"a[href*='/workgroups/group/']\")).map(e => "
+            "({href: e.href, text: e.textContent || ''}))",
+        ):
+            links.extend(chunk)
         for link in links:
             text = _strip_accents((link["text"] or "").lower())
             if target in text:
@@ -388,14 +456,11 @@ def find_group_id(page, log: GuardLog) -> str:
                 if m:
                     print(f"  ✓ Projeto encontrado (grupo {m.group(1)})")
                     return m.group(1)
+        if len(links) == prev_count:
+            break
         prev_count = len(links)
         page.mouse.wheel(0, 4000)
         page.wait_for_timeout(1500)
-        new_count = len(
-            page.query_selector_all("a[href*='/workgroups/group/']")
-        )
-        if new_count == prev_count:
-            break
 
     raise RuntimeError(
         f"Não foi possível localizar o projeto '{config.CLIENT_NAME}' na "
@@ -424,9 +489,13 @@ CHROME_EXCLUDE_SELECTOR = ", ".join([
 
 
 def _collect_task_links(page) -> list:
-    """Coleta links de tarefas apenas da área de conteúdo (sem menus/painéis)."""
+    """
+    Coleta links de tarefas em TODOS os frames, apenas da área de conteúdo
+    (menus/planejador/painéis globais são ignorados).
+    """
     js = """
     (excludeSel) => {
+      if (!document.body) return [];
       const out = [];
       document.querySelectorAll("a[href*='/tasks/task/view/']").forEach(e => {
         try { if (excludeSel && e.closest(excludeSel)) return; } catch (err) {}
@@ -435,10 +504,10 @@ def _collect_task_links(page) -> list:
       return out;
     }
     """
-    try:
-        return page.evaluate(js, CHROME_EXCLUDE_SELECTOR) or []
-    except Exception:
-        return []
+    links = []
+    for chunk in _eval_frames(page, js, CHROME_EXCLUDE_SELECTOR):
+        links.extend(chunk)
+    return links
 
 # Botões de paginação/carregar-mais aceitáveis (ação de navegação)
 MORE_BUTTON_SELECTORS = [
@@ -451,28 +520,29 @@ MORE_BUTTON_TEXTS = ["mostrar mais", "carregar mais", "show more", "mais"]
 
 def _click_load_more(page, log: GuardLog) -> bool:
     """Clica no botão de paginação 'mostrar mais', se houver (leitura)."""
-    for sel in MORE_BUTTON_SELECTORS:
-        btn = page.locator(sel)
-        try:
-            if btn.count() > 0 and btn.first.is_visible():
-                safe_click(btn.first, "carregar mais itens", log)
-                page.wait_for_timeout(2500)
-                return True
-        except ReadOnlyViolation:
-            raise
-        except Exception:
-            continue
-    for txt in MORE_BUTTON_TEXTS:
-        btn = page.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
-        try:
-            if btn.count() > 0 and btn.first.is_visible():
-                safe_click(btn.first, "carregar mais itens", log)
-                page.wait_for_timeout(2500)
-                return True
-        except ReadOnlyViolation:
-            raise
-        except Exception:
-            continue
+    for frame in _frames(page):
+        for sel in MORE_BUTTON_SELECTORS:
+            try:
+                btn = frame.locator(sel)
+                if btn.count() > 0 and btn.first.is_visible():
+                    safe_click(btn.first, "carregar mais itens", log)
+                    page.wait_for_timeout(2500)
+                    return True
+            except ReadOnlyViolation:
+                raise
+            except Exception:
+                continue
+        for txt in MORE_BUTTON_TEXTS:
+            try:
+                btn = frame.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
+                if btn.count() > 0 and btn.first.is_visible():
+                    safe_click(btn.first, "carregar mais itens", log)
+                    page.wait_for_timeout(2500)
+                    return True
+            except ReadOnlyViolation:
+                raise
+            except Exception:
+                continue
     return False
 
 
@@ -487,7 +557,8 @@ def collect_task_ids(page, group_id: str, log: GuardLog) -> dict:
     url = f"{config.BASE_URL}/workgroups/group/{group_id}/tasks/"
     print(f"→ Abrindo lista de tarefas: {url}")
     page.goto(url, wait_until="domcontentloaded")
-    page.wait_for_timeout(5000)
+    page.wait_for_timeout(4000)
+    _wait_for_slider(page)
 
     tasks: dict = {}
     stable_rounds = 0
@@ -561,6 +632,7 @@ def _text_after_label(page, labels: list) -> str | None:
     """
     js = """
     (labels) => {
+      if (!document.body) return null;
       const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase()
         .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
       const wanted = labels.map(norm);
@@ -592,10 +664,10 @@ def _text_after_label(page, labels: list) -> str | None:
       return null;
     }
     """
-    try:
-        return page.evaluate(js, labels)
-    except Exception:
-        return None
+    for result in _eval_frames(page, js, labels):
+        if result:
+            return result
+    return None
 
 
 def _extract_status(page) -> str:
@@ -609,6 +681,7 @@ def _extract_status(page) -> str:
     # 2) varredura por palavras de status conhecidas em elementos curtos
     js = """
     (keywords) => {
+      if (!document.body) return null;
       const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase()
         .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
       const wanted = keywords.map(norm);
@@ -622,12 +695,9 @@ def _extract_status(page) -> str:
       return null;
     }
     """
-    try:
-        found = page.evaluate(js, STATUS_KEYWORDS)
+    for found in _eval_frames(page, js, STATUS_KEYWORDS):
         if found:
             return found.strip()
-    except Exception:
-        pass
     return ""
 
 
@@ -641,21 +711,27 @@ def _extract_time_entries(page, task: Task) -> None:
     tempo", ela é aberta antes (clique de leitura, validado pela guarda).
     """
     # abre a aba de tempo, se existir (é apenas visualização)
+    clicked = False
     for pattern in [r"tempo decorrido", r"registro de tempo", r"elapsed time",
                     r"tempo gasto"]:
-        tab = page.get_by_text(re.compile(pattern, re.I))
-        try:
-            if tab.count() > 0 and tab.first.is_visible():
-                safe_click(tab.first, f"abrir aba de tempo ({pattern})")
-                page.wait_for_timeout(2500)
-                break
-        except ReadOnlyViolation:
-            raise
-        except Exception:
-            continue
+        for frame in _frames(page):
+            try:
+                tab = frame.get_by_text(re.compile(pattern, re.I))
+                if tab.count() > 0 and tab.first.is_visible():
+                    safe_click(tab.first, f"abrir aba de tempo ({pattern})")
+                    page.wait_for_timeout(2500)
+                    clicked = True
+                    break
+            except ReadOnlyViolation:
+                raise
+            except Exception:
+                continue
+        if clicked:
+            break
 
     js = """
     () => {
+      if (!document.body) return [];
       const rows = [];
       const rowEls = document.querySelectorAll('tr, .task-elapsed-time-row, li');
       for (const el of rowEls) {
@@ -668,10 +744,9 @@ def _extract_time_entries(page, task: Task) -> None:
       return rows;
     }
     """
-    try:
-        rows = page.evaluate(js) or []
-    except Exception:
-        rows = []
+    rows = []
+    for chunk in _eval_frames(page, js):
+        rows.extend(chunk)
 
     seen = set()
     for row in rows:
@@ -699,31 +774,37 @@ def _extract_description_and_comments(page, task: Task) -> None:
     for sel in [".task-detail-description", "#task-detail-description",
                 "[data-bx-id='task-view-description']",
                 ".tasks-description", ".task-description"]:
-        try:
-            el = page.locator(sel)
-            if el.count() > 0:
-                text = el.first.inner_text(timeout=3000).strip()
-                if text:
-                    task.description = re.sub(r"\s+", " ", text)[:600]
-                    break
-        except Exception:
-            continue
+        if task.description:
+            break
+        for frame in _frames(page):
+            try:
+                el = frame.locator(sel)
+                if el.count() > 0:
+                    text = el.first.inner_text(timeout=3000).strip()
+                    if text:
+                        task.description = re.sub(r"\s+", " ", text)[:600]
+                        break
+            except Exception:
+                continue
 
     # últimos comentários (feed de discussão da tarefa)
     for sel in [".feed-com-text", ".task-comment-text",
                 ".feed-com-block-inner", "[data-bx-comment-text]"]:
-        try:
-            els = page.locator(sel)
-            n = els.count()
-            if n > 0:
-                for i in range(max(0, n - 3), n):  # 3 mais recentes
-                    txt = els.nth(i).inner_text(timeout=3000).strip()
-                    txt = re.sub(r"\s+", " ", txt)
-                    if txt:
-                        task.last_comments.append(txt[:300])
-                break
-        except Exception:
-            continue
+        if task.last_comments:
+            break
+        for frame in _frames(page):
+            try:
+                els = frame.locator(sel)
+                n = els.count()
+                if n > 0:
+                    for i in range(max(0, n - 3), n):  # 3 mais recentes
+                        txt = els.nth(i).inner_text(timeout=3000).strip()
+                        txt = re.sub(r"\s+", " ", txt)
+                        if txt:
+                            task.last_comments.append(txt[:300])
+                    break
+            except Exception:
+                continue
 
 
 def _verify_crm_link(page, company_id: str | None) -> bool:
@@ -733,24 +814,22 @@ def _verify_crm_link(page, company_id: str | None) -> bool:
     ou o nome do cliente no texto da página.
     """
     if company_id:
-        try:
-            n = page.locator(
-                f"a[href*='/crm/company/details/{company_id}/']"
-            ).count()
-            if n > 0:
-                return True
-        except Exception:
-            pass
-    try:
-        body = page.evaluate("() => document.body.innerText || ''")
-        target = _strip_accents(config.CLIENT_NAME.lower())
-        if target in _strip_accents(body.lower()):
-            return True
-        # também aceita um prefixo razoável do nome (cadastros abreviados)
-        if target[:20] and target[:20] in _strip_accents(body.lower()):
-            return True
-    except Exception:
-        pass
+        for frame in _frames(page):
+            try:
+                n = frame.locator(
+                    f"a[href*='/crm/company/details/{company_id}/']"
+                ).count()
+                if n > 0:
+                    return True
+            except Exception:
+                continue
+    body = _strip_accents(_all_frames_text(page).lower())
+    target = _strip_accents(config.CLIENT_NAME.lower())
+    if target and target in body:
+        return True
+    # também aceita um prefixo razoável do nome (cadastros abreviados)
+    if target[:20] and target[:20] in body:
+        return True
     return False
 
 
@@ -760,24 +839,33 @@ def extract_task(page, task_id: str, fallback_title: str, task_url: str,
     task = Task(task_id=task_id, title=fallback_title)
     task.url = task_url
     page.goto(task.url, wait_until="domcontentloaded")
-    page.wait_for_timeout(3500)
+    page.wait_for_timeout(3000)
+    # o detalhe da tarefa também abre em slider/iframe — aguarda carregar
+    _wait_for_slider(page)
 
     # confirma o vínculo com o cliente (campo CRM da tarefa)
     if expected_company_id is not None:
         task.crm_linked = _verify_crm_link(page, expected_company_id)
 
-    # título
+    # título (o da página vence o texto parcial do link)
+    page_title = ""
     for sel in ["#pagetitle", ".pagetitle", "h1",
                 ".task-detail-title", "[data-bx-title]"]:
-        try:
-            el = page.locator(sel)
-            if el.count() > 0:
-                t = re.sub(r"\s+", " ", el.first.inner_text(timeout=3000)).strip()
-                if t and len(t) > 2:
-                    task.title = t
-                    break
-        except Exception:
-            continue
+        if page_title:
+            break
+        for frame in _frames(page):
+            try:
+                el = frame.locator(sel)
+                if el.count() > 0:
+                    t = re.sub(r"\s+", " ",
+                               el.first.inner_text(timeout=3000)).strip()
+                    if t and len(t) > 2:
+                        page_title = t
+                        break
+            except Exception:
+                continue
+    if page_title:
+        task.title = page_title
     if not task.title:
         task.warnings.append("título não localizado na página de detalhe")
 
