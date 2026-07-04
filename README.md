@@ -5,11 +5,17 @@ Automação com **Playwright + Chrome** que acessa o Bitrix24
 extrai os dados do cliente **TEC SYSTEM SISTEMAS ELETRONICOS LTDA**
 para gerar um relatório de tarefas e horas.
 
-As tarefas são localizadas pelo **vínculo de CRM**: o script encontra a
-empresa do cliente no CRM, abre a ficha dela
-(`/crm/company/details/<ID>/`), entra na aba **Tarefas** e extrai as
-tarefas vinculadas. (Há também um modo alternativo por grupo/projeto,
-via `--group-id`.)
+As tarefas são localizadas por **pesquisa global pelo nome do cliente**: o
+script navega para `/search/?q=<termo>` com cada variação de nome
+configurada (`config.SEARCH_TERMS` — ex.: TEC SYSTEM, TECSYSTEM, TECH
+SYSTEM, TS TELECOM) e coleta os links de tarefas encontrados nos
+resultados. (Há também um modo alternativo por grupo/projeto, via
+`--group-id`.)
+
+Cada termo tem um tempo máximo de busca (`SEARCH_TERM_TIMEOUT_S`, padrão
+40s) e, se não encontrar nenhuma tarefa, o script salva automaticamente um
+screenshot + texto da página em `relatorios/debug/busca_<termo>.png/.txt`
+para diagnóstico — mesmo sem a flag `--debug`.
 
 > Esta versão usa automação de **navegador** (Playwright), conforme
 > solicitado — **não** usa API REST nem webhooks do Bitrix24.
@@ -30,11 +36,11 @@ edita, conclui, move ou exclui nada. Duas camadas de proteção garantem isso:
    correspondência — ou dúvida —, o script **não clica**, interrompe a
    execução e reporta o motivo ao usuário (`ReadOnlyViolation`).
 
-Além disso, **nenhum filtro é salvo no Bitrix**: o script lê a lista de
-tarefas vinculadas à empresa na ficha do CRM (rolagem/paginação e troca de
-aba, que são ações de navegação) e aplica os recortes de período
-**localmente, em Python**. A abertura do detalhe de cada tarefa é feita
-**por URL direta** (navegação), não por botões de ação.
+Além disso, **nenhum filtro é salvo no Bitrix**: o script lê os resultados
+da pesquisa global por nome (rolagem/paginação e troca de aba, que são
+ações de navegação) e aplica os recortes de período **localmente, em
+Python**. A abertura do detalhe de cada tarefa é feita **por URL direta**
+(navegação), não por botões de ação.
 
 ## 🔑 Autenticação — sem senha no código
 
@@ -79,19 +85,19 @@ python gerar_relatorio.py
 
 # Opções úteis
 python gerar_relatorio.py --headed          # com janela visível
-python gerar_relatorio.py --company-id 123  # pula a busca da empresa pelo nome
 python gerar_relatorio.py --group-id 456    # modo alternativo: grupo/projeto
 python gerar_relatorio.py --max-tasks 5     # execução de teste com poucas tarefas
 python gerar_relatorio.py --debug           # salva diagnóstico em relatorios/debug/
 ```
 
-Configurações (nome do cliente, URL, timeouts…) ficam em `config.py` e podem
-ser sobrescritas por variáveis de ambiente (`BITRIX_COMPANY_ID`,
-`BITRIX_CLIENT_NAME`, `BITRIX_HEADLESS=0`, …).
+Configurações (nome do cliente, termos de busca, URL, timeouts…) ficam em
+`config.py` e podem ser sobrescritas por variáveis de ambiente
+(`BITRIX_SEARCH_TERMS`, `BITRIX_CLIENT_NAME`, `BITRIX_HEADLESS=0`, …).
 
-> **Dica:** para acelerar e evitar ambiguidades, abra a empresa no CRM do
-> Bitrix, copie o número da URL `/crm/company/details/<ID>/` e use
-> `--company-id <ID>`.
+> **Dica:** se a pesquisa por nome não encontrar as tarefas certas, ajuste
+> as variações de nome em `BITRIX_SEARCH_TERMS` (separadas por vírgula) ou
+> confira os arquivos `relatorios/debug/busca_<termo>.png/.txt`, salvos
+> automaticamente sempre que um termo não retornar nenhuma tarefa.
 
 ## O que o relatório contém
 
@@ -132,7 +138,7 @@ gerar_relatorio.py           # entrada principal
 bitrix_readonly/
   guard.py                   # guarda somente-leitura (rede + clique seguro)
   auth.py                    # validação de sessão / detecção de expiração
-  scraper.py                 # navegação e extração (CRM/empresa, lista, detalhe)
+  scraper.py                 # navegação e extração (pesquisa por nome, lista, detalhe)
   report.py                  # períodos, tradução de status, MD + CSV
 ```
 
@@ -141,9 +147,10 @@ bitrix_readonly/
 - Seletores de UI do Bitrix24 mudam entre versões/idiomas. O extrator usa
   múltiplos fallbacks e busca por rótulos de texto (PT/EN); o que não puder
   ser lido vira **aviso** no relatório — o script não inventa dados.
-- A coleta considera as tarefas **vinculadas à empresa no campo CRM**
-  exibidas na aba "Tarefas" da ficha da empresa. Tarefas sem esse vínculo
-  não aparecem — nesse caso use o modo `--group-id`.
+- A coleta depende da **pesquisa global do Bitrix24** (`/search/?q=`)
+  encontrar as tarefas pelo nome do cliente no título/descrição. Tarefas
+  sem nenhuma variação do nome no texto não aparecem — nesse caso use o
+  modo `--group-id` ou ajuste `BITRIX_SEARCH_TERMS`.
 - O detalhamento de horas por mês depende da lista de apontamentos exibida na
   página da tarefa; quando só o total agregado ("Tempo gasto") está visível,
   o total é usado e a coluna do mês anterior fica 0:00 com aviso.

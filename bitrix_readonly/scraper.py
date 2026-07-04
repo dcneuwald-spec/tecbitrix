@@ -237,12 +237,61 @@ def _wait_for_slider(page, timeout_ms: int = 12000) -> None:
 
 
 
+# Rótulos de aba/categoria "Tarefas" dentro da página de resultados da
+# pesquisa global. O Bitrix24 costuma misturar categorias (CRM, tarefas,
+# arquivos…) num resultado só, e às vezes SÓ carrega os resultados de
+# tarefas via AJAX depois que essa aba é clicada. É um clique de leitura
+# (navegação dentro da própria busca), validado pela guarda.
+SEARCH_TASKS_TAB_TEXTS = ["tarefas", "tasks"]
+
+
+def _open_tasks_tab_in_search(page, log: GuardLog) -> None:
+    for txt in SEARCH_TASKS_TAB_TEXTS:
+        for frame in _frames(page):
+            try:
+                tab = frame.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
+                if tab.count() > 0 and tab.first.is_visible():
+                    safe_click(tab.first, f"abrir aba '{txt}' nos resultados "
+                                          "da pesquisa", log)
+                    page.wait_for_timeout(2500)
+                    return
+            except ReadOnlyViolation:
+                raise
+            except Exception:
+                continue
+
+
+def _save_search_diagnostics(page, term: str) -> None:
+    """
+    Salva screenshot + texto de todos os frames para um termo que não achou
+    nada — diagnóstico automático, sem precisar da flag --debug, porque
+    'não achou nada' é indistinguível de 'travou' sem essa evidência.
+    """
+    import os as _os
+    slug = re.sub(r"[^a-z0-9]+", "_", term.lower()).strip("_") or "termo"
+    dbg_dir = _os.path.join(config.OUTPUT_DIR, "debug")
+    _os.makedirs(dbg_dir, exist_ok=True)
+    try:
+        page.screenshot(path=_os.path.join(dbg_dir, f"busca_{slug}.png"),
+                        full_page=True)
+    except Exception:
+        pass
+    try:
+        with open(_os.path.join(dbg_dir, f"busca_{slug}.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(f"URL: {page.url}\n\n")
+            f.write(_all_frames_text(page))
+    except Exception:
+        pass
+
+
 def collect_tasks_by_search(page, log: GuardLog) -> dict:
     """
     Usa a PESQUISA GLOBAL do Bitrix24 (navegação GET para /search/?q=...)
     com as variações de nome do cliente (config.SEARCH_TERMS) e coleta os
-    links de tarefas dos resultados. 100% leitura: apenas navegação por URL
-    e rolagem — nada é digitado em formulários nem salvo.
+    links de tarefas dos resultados. 100% leitura: apenas navegação por URL,
+    clique na aba 'Tarefas' dos resultados e rolagem — nada é digitado em
+    formulários nem salvo.
     """
     from urllib.parse import quote
 
@@ -257,10 +306,14 @@ def collect_tasks_by_search(page, log: GuardLog) -> dict:
             continue
         page.wait_for_timeout(4000)
         _wait_for_slider(page, 6000)
+        _open_tasks_tab_in_search(page, log)
 
         found_this_term = 0
         stable_rounds = 0
-        for _ in range(100):
+        deadline = time.monotonic() + config.SEARCH_TERM_TIMEOUT_S
+        round_num = 0
+        while time.monotonic() < deadline:
+            round_num += 1
             links = _collect_task_links(page)
             before = len(tasks)
             for link in links:
@@ -277,12 +330,19 @@ def collect_tasks_by_search(page, log: GuardLog) -> dict:
                 stable_rounds += 1
             else:
                 stable_rounds = 0
+            if round_num % 5 == 0:
+                print(f"  … '{term}': ainda buscando ({found_this_term} "
+                      f"encontrada(s) até agora, {round_num} rolagens)")
             if stable_rounds >= 3:
                 break
             if not _click_load_more(page, log):
                 page.mouse.wheel(0, 5000)
                 page.wait_for_timeout(1500)
         print(f"  … '{term}': {found_this_term} tarefa(s) nova(s) nos resultados")
+        if found_this_term == 0:
+            _save_search_diagnostics(page, term)
+            print(f"  🐞 '{term}' sem resultados — diagnóstico salvo em "
+                  f"{config.OUTPUT_DIR}/debug/busca_*.png/.txt")
 
     if tasks:
         print(f"  ✓ Total de tarefas via pesquisa global: {len(tasks)}")
@@ -290,7 +350,9 @@ def collect_tasks_by_search(page, log: GuardLog) -> dict:
         log.warn(
             "a pesquisa global não retornou links de tarefas para os termos "
             f"{config.SEARCH_TERMS} — a página /search/ pode não estar "
-            "disponível neste portal"
+            "disponível neste portal, ou o cliente não tem tarefas com esse "
+            "nome no título/descrição. Veja os arquivos de diagnóstico em "
+            f"{config.OUTPUT_DIR}/debug/."
         )
     return tasks
 

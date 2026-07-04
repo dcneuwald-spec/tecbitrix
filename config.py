@@ -21,13 +21,17 @@ CLIENT_NAME = os.environ.get(
 _gid = os.environ.get("BITRIX_GROUP_ID", "").strip()
 GROUP_ID = _gid or None
 
-# Termos usados na PESQUISA GLOBAL do Bitrix para achar tarefas do cliente
-# (além da ficha CRM). Separar por vírgula em BITRIX_SEARCH_TERMS.
+# Termos usados na PESQUISA GLOBAL do Bitrix para achar tarefas do cliente.
+# Separar por vírgula em BITRIX_SEARCH_TERMS.
 _terms = os.environ.get(
     "BITRIX_SEARCH_TERMS",
-    "TEC SYSTEM,TECSYSTEM,TEC-SYSTEM,TS TELECOM",
+    "TEC SYSTEM,TECSYSTEM,TEC-SYSTEM,TECH SYSTEM,TS TELECOM",
 )
 SEARCH_TERMS = [t.strip() for t in _terms.split(",") if t.strip()]
+
+# Tempo máximo (segundos) gasto rolando/paginando os resultados de UM termo
+# de pesquisa antes de seguir para o próximo — evita loops longos e silenciosos.
+SEARCH_TERM_TIMEOUT_S = float(os.environ.get("BITRIX_SEARCH_TERM_TIMEOUT_S", "40"))
 
 # Arquivo de sessão autenticada gerado por save_auth.py.
 # SENSÍVEL: está no .gitignore e NUNCA deve ser commitado.
