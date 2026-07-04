@@ -4,14 +4,17 @@ Gera o relatório do cliente/projeto configurado em config.py (por padrão,
 "TEC SYSTEM SISTEMAS ELETRONICOS LTDA") extraindo dados do Bitrix24 pelo
 navegador, em modo ESTRITAMENTE SOMENTE LEITURA.
 
-As tarefas são localizadas por PESQUISA GLOBAL por nome (variações de nome
-configuradas em config.SEARCH_TERMS). Alternativamente, use --group-id para
-o modo grupo/projeto.
+As tarefas são localizadas em MODO INTERATIVO: você navega e pesquisa
+dentro do Chrome do jeito que preferir (busca do Bitrix, projeto, filtro
+salvo…) e, quando a lista de tarefas do cliente estiver visível, confirma
+no terminal (ENTER) para o script rolar/paginar e coletar os links daquela
+tela. Pode repetir quantas vezes quiser antes de seguir para a extração.
+Alternativamente, use --group-id para o modo grupo/projeto (100% automático).
 
 Pré-requisito: sessão salva com `python save_auth.py` (login manual).
 
 Uso:
-    python gerar_relatorio.py [--headed] [--group-id N] [--max-tasks N]
+    python gerar_relatorio.py [--group-id N] [--max-tasks N]
 
 Saída: relatorios/relatorio_AAAA-MM-DD.md e relatorios/tarefas_AAAA-MM-DD.csv
 """
@@ -28,20 +31,21 @@ from bitrix_readonly.auth import SessionExpired, check_session, require_auth_fil
 from bitrix_readonly.guard import GuardLog, ReadOnlyViolation, install_network_guard
 from bitrix_readonly.report import build_report, previous_month_range
 from bitrix_readonly.scraper import (
-    collect_task_ids, collect_tasks_by_search, extract_task, find_group_id,
+    collect_task_ids, collect_tasks_interactive, extract_task, find_group_id,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headed", action="store_true",
-                        help="mostra a janela do navegador durante a execução")
+                        help="(ignorado no modo interativo — o navegador é "
+                             "sempre visível; só afeta o modo --group-id)")
     parser.add_argument("--group-id", default=None,
-                        help="modo alternativo: ID do grupo/projeto no Bitrix24")
-    parser.add_argument("--tasks-list-url", default=None,
-                        help="URL da lista geral de tarefas usada para o "
-                             "filtro por nome (se as URLs padrão não "
-                             "funcionarem neste portal)")
+                        help="modo alternativo: ID do grupo/projeto no "
+                             "Bitrix24 (100% automático, sem interação)")
+    parser.add_argument("--start-url", default=None,
+                        help="URL para abrir automaticamente antes de você "
+                             "navegar/pesquisar (padrão: portal do Bitrix24)")
     parser.add_argument("--max-tasks", type=int, default=None,
                         help="limita o nº de tarefas processadas (para testes)")
     parser.add_argument("--debug", action="store_true",
@@ -51,11 +55,13 @@ def main() -> int:
 
     if args.group_id:
         config.GROUP_ID = str(args.group_id)
-    if args.tasks_list_url:
-        config.TASKS_LIST_URL = args.tasks_list_url
     if args.max_tasks is not None:
         config.MAX_TASKS = args.max_tasks
-    headless = config.HEADLESS and not args.headed
+    interactive_mode = not (args.group_id or config.GROUP_ID)
+    # o modo interativo exige o navegador visível (você precisa ver a tela
+    # para navegar e confirmar); o modo --group-id continua podendo rodar
+    # headless, respeitando --headed/config.HEADLESS normalmente.
+    headless = False if interactive_mode else (config.HEADLESS and not args.headed)
 
     today = date.today()
     pm_start, pm_end = previous_month_range(today)
@@ -94,14 +100,19 @@ def main() -> int:
             print("✓ Sessão autenticada válida (nenhuma credencial usada).")
 
             # 2) coletar as tarefas
-            if args.group_id or config.GROUP_ID:
-                # modo alternativo: grupo/projeto
+            if not interactive_mode:
+                # modo alternativo: grupo/projeto (automático)
                 group_id = find_group_id(page, log)
                 task_index = collect_task_ids(page, group_id, log)
             else:
-                # modo padrão: pesquisa global pelas variações de nome
-                # (TEC SYSTEM, TECSYSTEM, TS TELECOM…)
-                task_index = collect_tasks_by_search(page, log)
+                # modo padrão: você navega/pesquisa, o script coleta quando
+                # você confirmar (ENTER) que a lista está na tela
+                start_url = args.start_url or f"{config.BASE_URL}/online/"
+                try:
+                    page.goto(start_url, wait_until="domcontentloaded")
+                except Exception as e:
+                    log.warn(f"falha ao abrir a URL inicial {start_url}: {e}")
+                task_index = collect_tasks_interactive(page, log)
 
             if args.debug or not task_index:
                 dbg_dir = os.path.join(config.OUTPUT_DIR, "debug")

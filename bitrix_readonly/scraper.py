@@ -238,57 +238,6 @@ def _wait_for_slider(page, timeout_ms: int = 12000) -> None:
         page.wait_for_timeout(step)
         waited += step
 
-
-
-
-# Rótulos de aba/categoria "Tarefas" dentro da página de resultados da
-# pesquisa global. O Bitrix24 costuma misturar categorias (CRM, tarefas,
-# arquivos…) num resultado só, e às vezes SÓ carrega os resultados de
-# tarefas via AJAX depois que essa aba é clicada. É um clique de leitura
-# (navegação dentro da própria busca), validado pela guarda.
-SEARCH_TASKS_TAB_TEXTS = ["tarefas", "tasks"]
-
-
-def _open_tasks_tab_in_search(page, log: GuardLog) -> None:
-    for txt in SEARCH_TASKS_TAB_TEXTS:
-        for frame in _frames(page):
-            try:
-                tab = frame.get_by_text(re.compile(rf"^\s*{txt}\s*$", re.I))
-                if tab.count() > 0 and tab.first.is_visible():
-                    safe_click(tab.first, f"abrir aba '{txt}' nos resultados "
-                                          "da pesquisa", log)
-                    page.wait_for_timeout(2500)
-                    return
-            except ReadOnlyViolation:
-                raise
-            except Exception:
-                continue
-
-
-def _save_search_diagnostics(page, label: str) -> None:
-    """
-    Salva screenshot + texto de todos os frames para diagnóstico — usado
-    quando um termo/estratégia não acha nada, porque 'não achou nada' é
-    indistinguível de 'travou' sem essa evidência visual.
-    """
-    import os as _os
-    slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "termo"
-    dbg_dir = _os.path.join(config.OUTPUT_DIR, "debug")
-    _os.makedirs(dbg_dir, exist_ok=True)
-    try:
-        page.screenshot(path=_os.path.join(dbg_dir, f"busca_{slug}.png"),
-                        full_page=True)
-    except Exception:
-        pass
-    try:
-        with open(_os.path.join(dbg_dir, f"busca_{slug}.txt"), "w",
-                  encoding="utf-8") as f:
-            f.write(f"URL: {page.url}\n\n")
-            f.write(_all_frames_text(page))
-    except Exception:
-        pass
-
-
 def _scroll_collect_tasks(page, log: GuardLog, tasks: dict, label: str) -> int:
     """
     Rola/pagina a página atual coletando links de tarefas até estabilizar
@@ -329,200 +278,60 @@ def _scroll_collect_tasks(page, log: GuardLog, tasks: dict, label: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Filtro de texto embutido na lista de tarefas (fonte PRINCIPAL de busca).
-# Ao contrário da pesquisa global (que pode não existir como página
-# navegável em todo portal — ver `_search_by_global_search`), o filtro por
-# texto do próprio grid de tarefas é um recurso padrão do Bitrix24.
-# Preencher o campo e apertar Enter é uma ação de leitura (filtra a visão
-# carregada, não salva nada no servidor).
+# MODO INTERATIVO — fonte principal de busca por nome.
+#
+# Em vez de o script ADIVINHAR seletores/URLs de um portal que nunca viu
+# (o que já causou 404 em /search/, filtros inexistentes etc.), quem navega
+# e pesquisa é você: usa a busca do próprio Bitrix, abre projetos, aplica
+# filtros — do jeito que for mais natural na sua tela. O script só entra em
+# ação quando você confirma (ENTER no terminal) que a lista de tarefas do
+# cliente está visível: aí ele rola/pagina e lê os links de tarefas daquela
+# tela. Pode repetir quantas rodadas quiser (outro termo, outro projeto).
 # ---------------------------------------------------------------------------
 
-TASKS_LIST_URL_CANDIDATES = [
-    "/company/personal/user/0/tasks/tasks/list/",
-    "/tasks/list/",
-    "/company/personal/user/0/tasks/",
-]
-
-FILTER_INPUT_SELECTORS = [
-    "input[name*='FIND']",
-    "input[placeholder*='Buscar' i]",
-    "input[placeholder*='Pesquisar' i]",
-    "input[placeholder*='Search' i]",
-    ".main-grid-filter-search-input input",
-    ".main-ui-filter-search-input",
-    ".tasks-toolbar-search input",
-    "#tasks-filter-find",
-]
-
-# Botão/ícone que expande a barra de filtro/busca, caso o campo de texto
-# não esteja visível de cara (comum em grids do Bitrix — filtro recolhido
-# atrás de um ícone de lupa/funil). Clique de leitura (só abre um painel).
-FILTER_TOGGLE_SELECTORS = [
-    ".main-ui-filter-search-icon", ".main-grid-filter-search-icon",
-    "[data-role='search-icon']", ".main-ui-filter-button",
-]
-
-
-def _goto_tasks_list_home(page, log: GuardLog) -> str | None:
-    """
-    Abre uma página de listagem GERAL de tarefas (não filtrada por grupo),
-    para servir de base ao filtro de texto por nome. Tenta, nessa ordem:
-    config.TASKS_LIST_URL (se configurado) e depois as URLs candidatas
-    conhecidas. Retorna a URL que funcionou (status < 400) ou None.
-    """
-    candidates = []
-    if config.TASKS_LIST_URL:
-        candidates.append(config.TASKS_LIST_URL)
-    candidates += [config.BASE_URL + p for p in TASKS_LIST_URL_CANDIDATES]
-
-    for url in candidates:
-        try:
-            resp = page.goto(url, wait_until="domcontentloaded")
-        except Exception:
-            continue
-        status = resp.status if resp else None
-        if status is not None and status >= 400:
-            continue
-        page.wait_for_timeout(3000)
-        _wait_for_slider(page, 4000)
-        return url
-    return None
-
-
-def _apply_text_filter(page, term: str, log: GuardLog) -> bool:
-    """Preenche o filtro de texto da lista com `term` e confirma (Enter)."""
-    for frame in _frames(page):
-        for toggle_sel in FILTER_TOGGLE_SELECTORS:
-            try:
-                btn = frame.locator(toggle_sel)
-                if btn.count() > 0 and btn.first.is_visible():
-                    safe_click(btn.first, "abrir campo de busca da lista", log)
-                    page.wait_for_timeout(800)
-            except ReadOnlyViolation:
-                raise
-            except Exception:
-                continue
-        for sel in FILTER_INPUT_SELECTORS:
-            try:
-                inp = frame.locator(sel)
-                if inp.count() > 0 and inp.first.is_visible():
-                    inp.first.fill(term)
-                    inp.first.press("Enter")
-                    page.wait_for_timeout(3000)
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _search_via_tasks_list_filter(page, log: GuardLog) -> dict:
-    """
-    Fonte PRINCIPAL: abre a lista geral de tarefas e usa o filtro de texto
-    embutido para cada variação de nome do cliente.
-    """
+def collect_tasks_interactive(page, log: GuardLog) -> dict:
     tasks: dict = {}
-    base_url = _goto_tasks_list_home(page, log)
-    if base_url is None:
-        log.warn(
-            "não foi possível abrir uma lista geral de tarefas (todas as "
-            "URLs candidatas falharam/retornaram erro). Abra a lista de "
-            "tarefas manualmente no Bitrix, copie a URL da barra de "
-            "endereço e configure BITRIX_TASKS_LIST_URL=<url> (ou "
-            "--tasks-list-url <url>)."
-        )
-        return tasks
+    print("=" * 70)
+    print("BUSCA MANUAL — você navega no Chrome, o script só lê")
+    print("=" * 70)
+    print("1. Na janela do navegador, use a busca/menus do próprio Bitrix24")
+    print("   para chegar até a lista de tarefas do cliente. Tente as")
+    print(f"   variações de nome: {', '.join(config.SEARCH_TERMS)}")
+    print("   (pesquisa do Bitrix, um projeto/grupo, um filtro salvo — o")
+    print("   que for mais fácil na sua tela).")
+    print("2. Quando a lista de tarefas estiver visível (role/pagine se")
+    print("   quiser carregar mais itens), volte aqui no terminal e")
+    print("   pressione ENTER: o script vai rolar e coletar os links de")
+    print("   tarefas dessa tela sozinho.")
+    print("3. Pode repetir quantas vezes quiser (outra busca, outro")
+    print("   projeto) — cada rodada soma ao total já coletado.")
+    print("   Digite 'fim' e ENTER quando terminar.")
+    print("=" * 70)
 
-    for term in config.SEARCH_TERMS:
-        print(f"→ Filtro da lista de tarefas por '{term}' (via {base_url})")
-        # recarrega a lista para partir sempre de um filtro limpo
+    round_num = 0
+    while True:
+        round_num += 1
         try:
-            page.goto(base_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
-            _wait_for_slider(page, 4000)
-        except Exception as e:
-            log.warn(f"falha ao recarregar lista de tarefas para '{term}': {e}")
-            continue
-
-        if not _apply_text_filter(page, term, log):
-            log.warn(
-                f"campo de filtro de texto não localizado na lista de "
-                f"tarefas para o termo '{term}'"
-            )
-            _save_search_diagnostics(page, f"filtro_{term}")
-            continue
-
-        found = _scroll_collect_tasks(page, log, tasks, term)
-        print(f"  … '{term}': {found} tarefa(s) nova(s) via filtro da lista")
-        if found == 0:
-            _save_search_diagnostics(page, f"filtro_{term}")
-
-    return tasks
-
-
-# ---------------------------------------------------------------------------
-# Pesquisa global do Bitrix (fonte ADICIONAL — nem todo portal expõe
-# /search/ como página navegável; se der 404, é pulada silenciosamente
-# após o primeiro termo, sem repetir o erro para cada variação de nome).
-# ---------------------------------------------------------------------------
-
-def _search_via_global_search(page, log: GuardLog) -> dict:
-    from urllib.parse import quote
-
-    tasks: dict = {}
-    global_search_ok = True
-    for term in config.SEARCH_TERMS:
-        if not global_search_ok:
+            resp = input(
+                f"\n>>> [{round_num}] ENTER para coletar a tela atual (ou "
+                "'fim' para seguir para a extração): "
+            ).strip().lower()
+        except EOFError:
             break
-        url = f"{config.BASE_URL}/search/?q={quote(term)}"
-        print(f"→ Pesquisa global por '{term}': {url}")
-        try:
-            resp = page.goto(url, wait_until="domcontentloaded")
-        except Exception as e:
-            log.warn(f"pesquisa global por '{term}' falhou ao abrir: {e}")
-            continue
-        status = resp.status if resp else None
-        if status is not None and status >= 400:
-            log.warn(
-                f"pesquisa global (/search/) retornou erro {status} neste "
-                "portal — não será tentada novamente para os demais termos"
-            )
-            global_search_ok = False
-            continue
-        page.wait_for_timeout(4000)
-        _wait_for_slider(page, 6000)
-        _open_tasks_tab_in_search(page, log)
+        if resp in ("fim", "sair", "pronto", "done", "end", "exit"):
+            break
+        found = _scroll_collect_tasks(page, log, tasks, f"rodada {round_num}")
+        print(f"  ✓ {found} tarefa(s) nova(s) coletada(s) nesta rodada "
+              f"(total acumulado: {len(tasks)})")
+        if found == 0:
+            print("  ⚠️  Nenhuma tarefa encontrada nesta tela. Confirme que "
+                  "a lista de tarefas do cliente está mesmo visível (não a "
+                  "ficha de uma tarefa, não um menu) antes de tentar de novo.")
 
-        found = _scroll_collect_tasks(page, log, tasks, term)
-        print(f"  … '{term}': {found} tarefa(s) nova(s) na pesquisa global")
-
-    return tasks
-
-
-def collect_tasks_by_search(page, log: GuardLog) -> dict:
-    """
-    Localiza tarefas do cliente pelo NOME, combinando duas fontes de leitura:
-    1. Filtro de texto embutido na lista de tarefas (fonte principal —
-       recurso padrão de qualquer portal Bitrix24).
-    2. Pesquisa global (/search/?q=...), como fonte adicional quando essa
-       rota existir no portal.
-    100% leitura: apenas navegação, preenchimento de campo de filtro e
-    rolagem — nada é digitado em formulários de tarefa nem salvo.
-    """
-    tasks = _search_via_tasks_list_filter(page, log)
-    for tid, info in _search_via_global_search(page, log).items():
-        if tid not in tasks:
-            tasks[tid] = info
-
-    if tasks:
-        print(f"  ✓ Total de tarefas encontradas pelo nome: {len(tasks)}")
+    if not tasks:
+        log.warn("modo interativo: nenhuma tarefa foi coletada")
     else:
-        log.warn(
-            "nenhuma tarefa encontrada para os termos "
-            f"{config.SEARCH_TERMS} — nem pelo filtro da lista de tarefas "
-            "nem pela pesquisa global. Veja os arquivos de diagnóstico em "
-            f"{config.OUTPUT_DIR}/debug/busca_*. Se necessário, informe a "
-            "URL certa da lista de tarefas com --tasks-list-url <url>."
-        )
+        print(f"\n✓ Total de tarefas coletadas: {len(tasks)}")
     return tasks
 
 

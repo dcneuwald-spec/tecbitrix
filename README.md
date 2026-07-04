@@ -5,27 +5,26 @@ Automação com **Playwright + Chrome** que acessa o Bitrix24
 extrai os dados do cliente **TEC SYSTEM SISTEMAS ELETRONICOS LTDA**
 para gerar um relatório de tarefas e horas.
 
-As tarefas são localizadas pelo **NOME do cliente**, combinando duas fontes:
+As tarefas são localizadas em **MODO INTERATIVO**: você navega e pesquisa
+dentro do Chrome do jeito que preferir — busca do próprio Bitrix24, um
+projeto, um filtro salvo — usando as variações de nome do cliente como
+referência (`config.SEARCH_TERMS`: TEC SYSTEM, TECSYSTEM, TECH SYSTEM, TS
+TELECOM…). Quando a lista de tarefas estiver visível na tela, você volta
+ao terminal e pressiona **ENTER**: o script rola/pagina e coleta os links
+de tarefas daquela tela sozinho. Pode repetir quantas rodadas quiser
+(outra busca, outro projeto) antes de seguir para a extração — cada
+rodada soma ao total.
 
-1. **Filtro de texto da lista de tarefas** (fonte principal) — abre uma
-   lista geral de tarefas e preenche o campo de busca/filtro embutido do
-   Bitrix com cada variação de nome (`config.SEARCH_TERMS` — ex.: TEC
-   SYSTEM, TECSYSTEM, TECH SYSTEM, TS TELECOM). É um recurso padrão de
-   qualquer portal Bitrix24, ao contrário da pesquisa global.
-2. **Pesquisa global** (`/search/?q=<termo>`) — usada como fonte
-   adicional quando essa rota existir no portal. Se ela retornar erro
-   (ex.: 404), é pulada automaticamente sem repetir o erro para cada termo.
+Esse modelo existe porque tentar **adivinhar** a URL/seletores certos de
+busca de um portal (pesquisa global, filtros de grid…) se mostrou frágil:
+cada portal Bitrix24 pode ter rotas diferentes, e um erro (como um 404
+silencioso) é indistinguível de "não achou nada". Deixar a navegação e a
+pesquisa com você — que vê a tela e conhece o portal — elimina essa
+adivinhação; o script só cuida da parte tediosa (rolar, paginar, extrair
+campo por campo).
 
-(Há também um modo alternativo por grupo/projeto, via `--group-id`.)
-
-Cada termo tem um tempo máximo de busca (`SEARCH_TERM_TIMEOUT_S`, padrão
-40s) e, se não encontrar nenhuma tarefa, o script salva automaticamente um
-screenshot + texto da página em `relatorios/debug/busca_<termo>.png/.txt`
-para diagnóstico — mesmo sem a flag `--debug`.
-
-Se as URLs padrão da lista de tarefas não funcionarem no seu portal, abra a
-lista manualmente no Bitrix, copie a URL da barra de endereço e use
-`--tasks-list-url <url>` (ou `BITRIX_TASKS_LIST_URL=<url>`).
+(Há também um modo alternativo, 100% automático, por grupo/projeto via
+`--group-id`, para quem já sabe o ID do projeto do cliente.)
 
 > Esta versão usa automação de **navegador** (Playwright), conforme
 > solicitado — **não** usa API REST nem webhooks do Bitrix24.
@@ -46,11 +45,11 @@ edita, conclui, move ou exclui nada. Duas camadas de proteção garantem isso:
    correspondência — ou dúvida —, o script **não clica**, interrompe a
    execução e reporta o motivo ao usuário (`ReadOnlyViolation`).
 
-Além disso, **nenhum filtro é salvo no Bitrix**: o script lê os resultados
-da pesquisa global por nome (rolagem/paginação e troca de aba, que são
-ações de navegação) e aplica os recortes de período **localmente, em
-Python**. A abertura do detalhe de cada tarefa é feita **por URL direta**
-(navegação), não por botões de ação.
+Além disso, **nenhum filtro é salvo no Bitrix**: a navegação/pesquisa é
+feita por você diretamente na interface (não é uma ação do script), e a
+coleta que o script faz depois (rolagem/paginação) e os recortes de
+período são aplicados **localmente, em Python**. A abertura do detalhe de
+cada tarefa é feita **por URL direta** (navegação), não por botões de ação.
 
 ## 🔑 Autenticação — sem senha no código
 
@@ -72,8 +71,8 @@ Basta dar dois cliques (ou digitar o nome no Prompt de Comando), na ordem:
 |---|---|
 | `instalar.bat` | 1ª vez: cria o ambiente Python e instala as dependências |
 | `login.bat` | abre o navegador para o login manual no Bitrix24 (salva `auth.json`) |
-| `teste.bat` | rodada de validação: 10 tarefas, navegador visível, com debug |
-| `relatorio.bat` | relatório completo (aceita opções, ex.: `relatorio.bat --headed`) |
+| `teste.bat` | rodada de validação: navegue/pesquise e pressione ENTER; até 10 tarefas, com debug |
+| `relatorio.bat` | relatório completo (mesma busca manual; aceita opções, ex.: `relatorio.bat --max-tasks 5`) |
 | `atualizar.bat` | baixa e aplica a versão mais recente do GitHub |
 
 ## Instalação manual (Linux/Mac ou quem preferir)
@@ -94,22 +93,19 @@ python save_auth.py
 python gerar_relatorio.py
 
 # Opções úteis
-python gerar_relatorio.py --headed                     # com janela visível
-python gerar_relatorio.py --group-id 456               # modo alternativo: grupo/projeto
-python gerar_relatorio.py --tasks-list-url <url>        # URL certa da lista de tarefas
-python gerar_relatorio.py --max-tasks 5                # execução de teste com poucas tarefas
-python gerar_relatorio.py --debug                      # salva diagnóstico em relatorios/debug/
+python gerar_relatorio.py --group-id 456        # modo alternativo: grupo/projeto (automático)
+python gerar_relatorio.py --start-url <url>     # abre essa URL antes de você navegar/pesquisar
+python gerar_relatorio.py --max-tasks 5         # execução de teste com poucas tarefas
+python gerar_relatorio.py --debug               # salva diagnóstico em relatorios/debug/
 ```
 
-Configurações (nome do cliente, termos de busca, URL, timeouts…) ficam em
-`config.py` e podem ser sobrescritas por variáveis de ambiente
-(`BITRIX_SEARCH_TERMS`, `BITRIX_TASKS_LIST_URL`, `BITRIX_CLIENT_NAME`,
-`BITRIX_HEADLESS=0`, …).
+No modo interativo (padrão), o navegador abre visível e o script espera
+você pressionar **ENTER** no terminal a cada rodada de coleta — veja as
+instruções impressas na tela ao rodar.
 
-> **Dica:** se a pesquisa por nome não encontrar as tarefas certas, ajuste
-> as variações de nome em `BITRIX_SEARCH_TERMS` (separadas por vírgula) ou
-> confira os arquivos `relatorios/debug/busca_<termo>.png/.txt`, salvos
-> automaticamente sempre que um termo não retornar nenhuma tarefa.
+Configurações (nome do cliente, termos de busca lembrados na tela, URL,
+timeouts…) ficam em `config.py` e podem ser sobrescritas por variáveis de
+ambiente (`BITRIX_SEARCH_TERMS`, `BITRIX_CLIENT_NAME`, `BITRIX_HEADLESS=0`, …).
 
 ## O que o relatório contém
 
@@ -159,10 +155,10 @@ bitrix_readonly/
 - Seletores de UI do Bitrix24 mudam entre versões/idiomas. O extrator usa
   múltiplos fallbacks e busca por rótulos de texto (PT/EN); o que não puder
   ser lido vira **aviso** no relatório — o script não inventa dados.
-- A coleta depende da **pesquisa global do Bitrix24** (`/search/?q=`)
-  encontrar as tarefas pelo nome do cliente no título/descrição. Tarefas
-  sem nenhuma variação do nome no texto não aparecem — nesse caso use o
-  modo `--group-id` ou ajuste `BITRIX_SEARCH_TERMS`.
+- A coleta depende de você confirmar (ENTER) a tela certa no modo
+  interativo. Se a lista de tarefas usar rolagem infinita muito lenta ou
+  paginação incomum, pode ser necessário rolar manualmente um pouco antes
+  de confirmar, para o Bitrix carregar mais itens.
 - O detalhamento de horas por mês depende da lista de apontamentos exibida na
   página da tarefa; quando só o total agregado ("Tempo gasto") está visível,
   o total é usado e a coluna do mês anterior fica 0:00 com aviso.
