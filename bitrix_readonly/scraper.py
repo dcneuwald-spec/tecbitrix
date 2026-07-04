@@ -58,6 +58,7 @@ class Task:
     total_seconds_reported: int | None = None  # campo "Tempo gasto", se lido
     warnings: list = field(default_factory=list)
     url: str = ""
+    crm_linked: bool | None = None  # True/False após verificação; None = n/a
 
     @property
     def total_seconds(self) -> int:
@@ -233,21 +234,26 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
     page.goto(url, wait_until="domcontentloaded")
     page.wait_for_timeout(5000)
 
-    # A aba "Tarefas" da ficha CRM é apenas visualização. Tentamos seletores
-    # específicos de aba antes do texto genérico, para não confundir com o
-    # item "Tarefas" do menu lateral global (que navegaria para fora).
+    # A aba/filtro "Tarefas" da ficha CRM é apenas visualização. Tentamos
+    # seletores específicos (aba da ficha e filtro da linha do tempo) antes
+    # do texto genérico, sempre DENTRO da área da ficha — nunca o item
+    # "Tarefas" do menu lateral global (que navegaria para fora).
     tab_selectors = [
         "[data-tab-id*='task']",
         ".ui-tabs-item:has-text('Tarefas')",
         ".crm-entity-tab:has-text('Tarefas')",
         "a[href*='#tab'][href*='task']",
+        # filtro da linha do tempo do CRM (chips acima do histórico)
+        ".crm-entity-stream-section-menu :text('Tarefas')",
+        ".crm-entity-stream-filter :text('Tarefas')",
+        ".crm-entity-section [data-id*='task']",
     ]
     opened = False
     for sel in tab_selectors:
         try:
             tab = page.locator(sel)
             if tab.count() > 0 and tab.first.is_visible():
-                safe_click(tab.first, "abrir aba 'Tarefas' da empresa", log)
+                safe_click(tab.first, f"abrir visão 'Tarefas' da empresa ({sel})", log)
                 page.wait_for_timeout(4000)
                 opened = True
                 break
@@ -257,17 +263,14 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
             continue
     if not opened:
         log.warn(
-            "aba 'Tarefas' não localizada na ficha da empresa — tentando ler "
-            "links de tarefas visíveis na própria página (linha do tempo)"
+            "aba/filtro 'Tarefas' não localizado na ficha da empresa — lendo "
+            "os links de tarefas da linha do tempo da própria ficha"
         )
 
     tasks: dict = {}
     stable_rounds = 0
     for _ in range(300):
-        links = page.eval_on_selector_all(
-            "a[href*='/tasks/task/view/']",
-            "els => els.map(e => ({href: e.href, text: e.textContent || ''}))",
-        )
+        links = _collect_task_links(page)
         before = len(tasks)
         for link in links:
             m = TASK_LINK_RE.search(link["href"])
@@ -292,15 +295,70 @@ def collect_tasks_from_company(page, company_id: str, log: GuardLog) -> dict:
             page.mouse.wheel(0, 5000)
             page.wait_for_timeout(1500)
 
+    # Fallback adicional: o histórico da ficha cita tarefas pelo NÚMERO
+    # (ex.: "Tarefa nº 1234") nem sempre com link. Capturamos esses números
+    # do texto e montamos a URL de visualização. Cada tarefa é depois
+    # verificada pelo campo CRM, então números capturados por engano são
+    # descartados com aviso.
+    try:
+        body = page.evaluate("() => document.body.innerText || ''")
+    except Exception:
+        body = ""
+    mentioned = set(re.findall(
+        r"tarefa\s*(?:n[oº°]?\.?|#|№)?\s*(\d{1,7})\b",
+        _strip_accents(body.lower()),
+    ))
+    new_ids = [tid for tid in mentioned if tid not in tasks]
+    if new_ids:
+        uid = _current_user_id(page)
+        if uid:
+            for tid in sorted(new_ids, key=int):
+                tasks[tid] = {
+                    "title": "",
+                    "url": (f"{config.BASE_URL}/company/personal/user/{uid}"
+                            f"/tasks/task/view/{tid}/"),
+                }
+            print(f"  + {len(new_ids)} tarefa(s) citadas por número no "
+                  "histórico (serão verificadas pelo campo CRM)")
+        else:
+            log.warn(
+                f"{len(new_ids)} número(s) de tarefa citados no histórico "
+                "não puderam ser abertos (ID do usuário atual não detectado)"
+            )
+
     if not tasks:
         log.warn(
-            "Nenhum link de tarefa encontrado na ficha da empresa. Verifique "
-            "se a aba 'Tarefas' existe nessa ficha e se há tarefas com o "
-            "campo CRM apontando para essa empresa."
+            "Nenhum link ou número de tarefa encontrado na ficha da empresa. "
+            "Verifique se o histórico/aba 'Tarefas' contém as tarefas e se o "
+            "campo CRM delas aponta para essa empresa."
         )
     else:
-        print(f"  ✓ Total de tarefas vinculadas à empresa: {len(tasks)}")
+        print(f"  ✓ Total de tarefas coletadas na ficha da empresa: {len(tasks)}")
     return tasks
+
+
+def _current_user_id(page) -> str | None:
+    """Lê o ID do usuário logado (só leitura, via JS da própria página)."""
+    try:
+        uid = page.evaluate(
+            "() => (window.BX && BX.message && BX.message('USER_ID')) || null"
+        )
+        if uid and str(uid).isdigit():
+            return str(uid)
+    except Exception:
+        pass
+    try:
+        links = page.eval_on_selector_all(
+            "a[href*='/company/personal/user/']",
+            "els => els.map(e => e.href)",
+        )
+        for href in links:
+            m = re.search(r"/company/personal/user/(\d+)/", href)
+            if m and m.group(1) != "0":
+                return m.group(1)
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +409,36 @@ def find_group_id(page, log: GuardLog) -> str:
 # ---------------------------------------------------------------------------
 
 TASK_LINK_RE = re.compile(r"/tasks/task/view/(\d+)/")
+
+# Áreas globais da interface do Bitrix que exibem tarefas do PRÓPRIO usuário
+# (planejador, menus, notificações, chat). Links dentro delas NÃO pertencem
+# ao cliente e são ignorados na coleta.
+CHROME_EXCLUDE_SELECTOR = ", ".join([
+    "#bx-panel", ".bx-planner-panel", "[data-role='tasks-planner']",
+    ".tasks-planner-panel", "#top_menu", ".top-menu-container",
+    ".main-buttons-container", ".intranet-left-menu", "#left-menu",
+    ".menu-items", ".bx-im-messenger", ".im-bar", "#bx-im-external-recent",
+    ".header-search-block", "#header", ".help-block-popup",
+    ".bx-notifier-panel", ".popup-window",
+])
+
+
+def _collect_task_links(page) -> list:
+    """Coleta links de tarefas apenas da área de conteúdo (sem menus/painéis)."""
+    js = """
+    (excludeSel) => {
+      const out = [];
+      document.querySelectorAll("a[href*='/tasks/task/view/']").forEach(e => {
+        try { if (excludeSel && e.closest(excludeSel)) return; } catch (err) {}
+        out.push({href: e.href, text: e.textContent || ''});
+      });
+      return out;
+    }
+    """
+    try:
+        return page.evaluate(js, CHROME_EXCLUDE_SELECTOR) or []
+    except Exception:
+        return []
 
 # Botões de paginação/carregar-mais aceitáveis (ação de navegação)
 MORE_BUTTON_SELECTORS = [
@@ -404,10 +492,7 @@ def collect_task_ids(page, group_id: str, log: GuardLog) -> dict:
     tasks: dict = {}
     stable_rounds = 0
     for round_num in range(300):
-        links = page.eval_on_selector_all(
-            "a[href*='/tasks/task/view/']",
-            "els => els.map(e => ({href: e.href, text: e.textContent || ''}))",
-        )
+        links = _collect_task_links(page)
         before = len(tasks)
         for link in links:
             m = TASK_LINK_RE.search(link["href"])
@@ -641,13 +726,45 @@ def _extract_description_and_comments(page, task: Task) -> None:
             continue
 
 
+def _verify_crm_link(page, company_id: str | None) -> bool:
+    """
+    Confirma, na página de detalhe da tarefa, que ela está vinculada à
+    empresa do cliente: procura um link para /crm/company/details/<ID>/
+    ou o nome do cliente no texto da página.
+    """
+    if company_id:
+        try:
+            n = page.locator(
+                f"a[href*='/crm/company/details/{company_id}/']"
+            ).count()
+            if n > 0:
+                return True
+        except Exception:
+            pass
+    try:
+        body = page.evaluate("() => document.body.innerText || ''")
+        target = _strip_accents(config.CLIENT_NAME.lower())
+        if target in _strip_accents(body.lower()):
+            return True
+        # também aceita um prefixo razoável do nome (cadastros abreviados)
+        if target[:20] and target[:20] in _strip_accents(body.lower()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def extract_task(page, task_id: str, fallback_title: str, task_url: str,
-                 log: GuardLog) -> Task:
+                 log: GuardLog, expected_company_id: str | None = None) -> Task:
     """Abre a página de detalhe da tarefa (por URL) e lê todos os campos."""
     task = Task(task_id=task_id, title=fallback_title)
     task.url = task_url
     page.goto(task.url, wait_until="domcontentloaded")
     page.wait_for_timeout(3500)
+
+    # confirma o vínculo com o cliente (campo CRM da tarefa)
+    if expected_company_id is not None:
+        task.crm_linked = _verify_crm_link(page, expected_company_id)
 
     # título
     for sel in ["#pagetitle", ".pagetitle", "h1",

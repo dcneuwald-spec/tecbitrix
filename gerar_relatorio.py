@@ -18,6 +18,7 @@ Saída: relatorios/relatorio_AAAA-MM-DD.md e relatorios/tarefas_AAAA-MM-DD.csv
 """
 
 import argparse
+import os
 import sys
 from datetime import date
 
@@ -43,6 +44,9 @@ def main() -> int:
                         help="modo alternativo: ID do grupo/projeto no Bitrix24")
     parser.add_argument("--max-tasks", type=int, default=None,
                         help="limita o nº de tarefas processadas (para testes)")
+    parser.add_argument("--debug", action="store_true",
+                        help="salva capturas de tela e lista de links em "
+                             "relatorios/debug/ para diagnóstico")
     args = parser.parse_args()
 
     if args.company_id:
@@ -90,6 +94,7 @@ def main() -> int:
             print("✓ Sessão autenticada válida (nenhuma credencial usada).")
 
             # 2) localizar o cliente e coletar as tarefas vinculadas
+            company_id = None
             if args.group_id or (config.GROUP_ID and not config.COMPANY_ID):
                 # modo alternativo: grupo/projeto
                 group_id = find_group_id(page, log)
@@ -98,6 +103,18 @@ def main() -> int:
                 # modo padrão: empresa no CRM (campo CRM das tarefas)
                 company_id = find_company_id(page, log)
                 task_index = collect_tasks_from_company(page, company_id, log)
+
+            if args.debug:
+                dbg_dir = os.path.join(config.OUTPUT_DIR, "debug")
+                os.makedirs(dbg_dir, exist_ok=True)
+                page.screenshot(path=os.path.join(dbg_dir, "coleta.png"),
+                                full_page=True)
+                with open(os.path.join(dbg_dir, "links.txt"), "w",
+                          encoding="utf-8") as f:
+                    for tid, info in task_index.items():
+                        f.write(f"{tid}\t{info['title']}\t{info['url']}\n")
+                print(f"  🐞 debug salvo em {dbg_dir}/")
+
             if not task_index:
                 print("\n❌ Nenhuma tarefa encontrada — relatório não gerado.")
                 return 3
@@ -110,13 +127,17 @@ def main() -> int:
                 )
                 ids = ids[: config.MAX_TASKS]
 
-            # 4) abrir o detalhe de cada tarefa (navegação por URL) e extrair
+            # 4) abrir o detalhe de cada tarefa (navegação por URL), conferir
+            #    o vínculo com o cliente (campo CRM) e extrair os campos
             tasks = []
             for i, (tid, info) in enumerate(ids, 1):
                 title, url = info["title"], info["url"]
                 print(f"→ [{i}/{len(ids)}] tarefa {tid} — {title[:60]}")
                 try:
-                    tasks.append(extract_task(page, tid, title, url, log))
+                    tasks.append(extract_task(
+                        page, tid, title, url, log,
+                        expected_company_id=company_id,
+                    ))
                 except ReadOnlyViolation:
                     raise
                 except Exception as e:
@@ -136,7 +157,25 @@ def main() -> int:
         print(f"\n❌ {e}")
         return 2
 
-    # 5) relatório
+    # 5) mantém apenas tarefas com vínculo confirmado com o cliente (modo CRM)
+    if company_id is not None:
+        linked = [t for t in tasks if t.crm_linked]
+        dropped = [t for t in tasks if not t.crm_linked]
+        for t in dropped:
+            log.warn(
+                f"tarefa {t.task_id} ({t.title[:50]}) descartada: não foi "
+                "possível confirmar o vínculo com o cliente no campo CRM"
+            )
+        if linked:
+            tasks = linked
+        elif dropped:
+            print(
+                "\n⚠️  Nenhuma tarefa teve o vínculo com o cliente confirmado "
+                "no campo CRM. Nada foi descartado para não gerar relatório "
+                "vazio — confira os avisos no relatório e rode com --debug."
+            )
+
+    # 6) relatório
     result = build_report(tasks, log, today)
 
     print("\n" + "=" * 70)
