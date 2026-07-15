@@ -1,0 +1,6 @@
+DejaVuSans.ttf e DejaVuSans-Bold.ttf são distribuídas sob a licença Bitstream
+Vera (domínio público / livre redistribuição, sem uso das marcas "Bitstream"
+ou "Vera" no nome). Fonte: https://dejavu-fonts.github.io/
+
+Incluídas aqui para que os scripts de geração de capa e vídeo funcionem sem
+depender de fontes já instaladas no sistema operacional.
