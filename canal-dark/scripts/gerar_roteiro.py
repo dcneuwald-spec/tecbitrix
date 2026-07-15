@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Iterator
 
 import anthropic
@@ -27,12 +25,11 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from pydantic import BaseModel
 
+from fila import DATA_DIR, salvar_fila
+
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
 IDEIAS_CSV = DATA_DIR / "ideias.csv"
-FILA_JSON = DATA_DIR / "fila_producao.json"
 
 REGION_CODE = os.environ.get("YOUTUBE_REGION_CODE", "BR")
 
@@ -174,7 +171,9 @@ segundos na tela)
 2. Um roteiro de narração para vídeo vertical de 30 a 90 segundos: gancho nos primeiros \
 2-3 segundos, conteúdo direto (ex.: passo a passo de uma receita, ou uma dica prática de \
 emagrecimento/nutrição) e um call-to-action final para seguir o perfil. Quando fizer \
-sentido, indique sugestões de texto na tela entre colchetes.
+sentido, indique sugestões de texto na tela entre colchetes contendo APENAS o texto que \
+deve aparecer na tela, sem prefixos como "Texto na tela:" ou "Mostrar:" — \
+ex.: [3 dicas pra emagrecer sem passar fome], não [Texto na tela: 3 dicas pra emagrecer].
 3. Uma legenda para a publicação no TikTok (curta, com emojis moderados, terminando com \
 uma pergunta ou chamada para comentar)
 4. Uma lista de 6 a 10 hashtags relevantes para o nicho (sem o caractere #), misturando \
@@ -239,11 +238,8 @@ def gerar_fila_producao(ideias: list[dict]) -> None:
             }
         )
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with FILA_JSON.open("w", encoding="utf-8") as f:
-        json.dump(fila, f, ensure_ascii=False, indent=2)
-
-    print(f"{len(fila)} roteiros salvos em {FILA_JSON}")
+    salvar_fila(fila)
+    print(f"{len(fila)} roteiros salvos em {DATA_DIR / 'fila_producao.json'}")
 
 
 def main() -> None:

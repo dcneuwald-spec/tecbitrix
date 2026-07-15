@@ -18,24 +18,15 @@ Depois de publicar manualmente, marque o item como concluído:
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-FILA_JSON = DATA_DIR / "fila_producao.json"
+from fila import DATA_DIR, FILA_JSON, carregar_fila, salvar_fila
+
 PUBLICACOES_DIR = DATA_DIR / "publicacoes"
 
 LIMITE_LEGENDA_TIKTOK = 2200
-
-
-def carregar_fila() -> list[dict]:
-    return json.loads(FILA_JSON.read_text(encoding="utf-8"))
-
-
-def salvar_fila(fila: list[dict]) -> None:
-    FILA_JSON.write_text(json.dumps(fila, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def montar_legenda(item: dict) -> str:

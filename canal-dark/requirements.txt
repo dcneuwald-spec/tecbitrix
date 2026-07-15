@@ -2,3 +2,7 @@ anthropic>=0.68.0
 google-api-python-client>=2.140.0
 python-dotenv>=1.0.1
 pydantic>=2.8.0
+elevenlabs>=2.0.0
+moviepy>=2.1.0
+Pillow>=11.0.0
+numpy>=2.0.0
