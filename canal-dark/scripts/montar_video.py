@@ -1,5 +1,5 @@
-"""Monta o vídeo final (narração + imagens/clipes + legendas) para os itens
-da fila com status "voz_pronta".
+"""Monta o vídeo final vertical (9:16, formato TikTok) — narração + imagens/clipes
++ legendas na tela — para os itens da fila com status "voz_pronta".
 
 Ainda não implementado — próximo passo do pipeline após gerar_voz.py.
 """
@@ -21,8 +21,8 @@ def main() -> None:
     fila = carregar_fila()
     pendentes = [item for item in fila if item["status"] == "voz_pronta"]
     print(f"{len(pendentes)} item(ns) aguardando montagem de vídeo.")
-    # TODO: montar o vídeo (ex.: moviepy/ffmpeg), salvar o arquivo gerado e
-    # atualizar item["status"] = "video_pronto".
+    # TODO: montar o vídeo vertical (ex.: moviepy/ffmpeg), salvar o caminho
+    # do arquivo em item["video_path"] e atualizar item["status"] = "video_pronto".
 
 
 if __name__ == "__main__":

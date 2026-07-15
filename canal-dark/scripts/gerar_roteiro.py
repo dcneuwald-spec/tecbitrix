@@ -1,5 +1,7 @@
-"""Coleta vídeos em alta no YouTube, salva em data/ideias.csv e gera roteiros
-(roteiro + descrição + hashtags) para cada ideia usando a API da Anthropic,
+"""Busca vídeos em alta no YouTube sobre nutrição/dieta/emagrecimento/receitas
+(como proxy de tendência, já que o TikTok não expõe uma API pública de
+trends), salva em data/ideias.csv e gera roteiros originais para TikTok
+(roteiro + legenda + hashtags) para cada ideia usando a API da Anthropic,
 salvando o resultado estruturado em data/fila_producao.json.
 
 Uso:
@@ -15,8 +17,9 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 import anthropic
 from dotenv import load_dotenv
@@ -32,14 +35,28 @@ IDEIAS_CSV = DATA_DIR / "ideias.csv"
 FILA_JSON = DATA_DIR / "fila_producao.json"
 
 REGION_CODE = os.environ.get("YOUTUBE_REGION_CODE", "BR")
-CATEGORY_ID = os.environ.get("YOUTUBE_CATEGORY_ID")  # ex.: "24" (Entretenimento)
+
+# Termos usados para localizar vídeos em alta no nicho (o YouTube não tem uma
+# categoria própria de "nutrição/dieta", então buscamos por palavra-chave).
+DEFAULT_TERMOS = (
+    "receita fit,dieta cetogênica,emagrecimento,receita saudável,nutrição,"
+    "low carb,perder peso rápido,jejum intermitente,dieta para emagrecer,"
+    "receita de dieta"
+)
+TERMOS_BUSCA = [
+    t.strip()
+    for t in os.environ.get("NICHO_TERMOS_BUSCA", DEFAULT_TERMOS).split(",")
+    if t.strip()
+]
+RESULTADOS_POR_TERMO = int(os.environ.get("YOUTUBE_RESULTADOS_POR_TERMO", "5"))
+DIAS_RECENCIA = int(os.environ.get("YOUTUBE_DIAS_RECENCIA", "30"))
 MAX_RESULTS = int(os.environ.get("YOUTUBE_MAX_RESULTS", "25"))
 
 CSV_FIELDS = [
     "video_id",
     "titulo",
     "canal",
-    "categoria_id",
+    "termo_busca",
     "visualizacoes",
     "likes",
     "comentarios",
@@ -48,51 +65,88 @@ CSV_FIELDS = [
 ]
 
 
-class Roteiro(BaseModel):
+class RoteiroTikTok(BaseModel):
     titulo_sugerido: str
     roteiro: str
-    descricao: str
+    legenda: str
     hashtags: list[str]
 
 
+def _em_lotes(itens: list[str], tamanho: int) -> Iterator[list[str]]:
+    for i in range(0, len(itens), tamanho):
+        yield itens[i : i + tamanho]
+
+
 def buscar_trends_youtube() -> list[dict]:
-    """Busca os vídeos em alta no YouTube (Data API v3) e salva em data/ideias.csv."""
+    """Busca vídeos em alta no nicho de nutrição/dieta (YouTube Data API v3,
+    usado como proxy de tendência) e salva em data/ideias.csv."""
     api_key = os.environ["YOUTUBE_API_KEY"]
     youtube = build("youtube", "v3", developerKey=api_key)
+    published_after = (
+        datetime.now(timezone.utc) - timedelta(days=DIAS_RECENCIA)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    params = {
-        "part": "snippet,statistics",
-        "chart": "mostPopular",
-        "regionCode": REGION_CODE,
-        "maxResults": MAX_RESULTS,
-    }
-    if CATEGORY_ID:
-        params["videoCategoryId"] = CATEGORY_ID
+    termo_por_video_id: dict[str, str] = {}
+    for termo in TERMOS_BUSCA:
+        try:
+            resp = (
+                youtube.search()
+                .list(
+                    part="id",
+                    q=termo,
+                    type="video",
+                    order="viewCount",
+                    maxResults=RESULTADOS_POR_TERMO,
+                    regionCode=REGION_CODE,
+                    relevanceLanguage="pt",
+                    publishedAfter=published_after,
+                )
+                .execute()
+            )
+        except HttpError as e:
+            print(f"Erro ao buscar '{termo}': {e}", file=sys.stderr)
+            continue
 
-    try:
-        response = youtube.videos().list(**params).execute()
-    except HttpError as e:
-        print(f"Erro ao consultar a YouTube Data API: {e}", file=sys.stderr)
-        raise
+        for item in resp.get("items", []):
+            video_id = item["id"]["videoId"]
+            termo_por_video_id.setdefault(video_id, termo)
+
+    if not termo_por_video_id:
+        print("Nenhum vídeo encontrado para os termos configurados.")
+        return []
 
     coletado_em = datetime.now(timezone.utc).isoformat()
     ideias = []
-    for item in response.get("items", []):
-        snippet = item["snippet"]
-        stats = item.get("statistics", {})
-        ideias.append(
-            {
-                "video_id": item["id"],
-                "titulo": snippet["title"],
-                "canal": snippet["channelTitle"],
-                "categoria_id": snippet.get("categoryId", ""),
-                "visualizacoes": stats.get("viewCount", "0"),
-                "likes": stats.get("likeCount", "0"),
-                "comentarios": stats.get("commentCount", "0"),
-                "url": f"https://www.youtube.com/watch?v={item['id']}",
-                "coletado_em": coletado_em,
-            }
-        )
+    for lote in _em_lotes(list(termo_por_video_id), 50):  # limite da API por chamada
+        try:
+            resp = (
+                youtube.videos()
+                .list(part="snippet,statistics", id=",".join(lote))
+                .execute()
+            )
+        except HttpError as e:
+            print(f"Erro ao consultar detalhes dos vídeos: {e}", file=sys.stderr)
+            continue
+
+        for item in resp.get("items", []):
+            snippet = item["snippet"]
+            stats = item.get("statistics", {})
+            ideias.append(
+                {
+                    "video_id": item["id"],
+                    "titulo": snippet["title"],
+                    "canal": snippet["channelTitle"],
+                    "termo_busca": termo_por_video_id.get(item["id"], ""),
+                    "visualizacoes": stats.get("viewCount", "0"),
+                    "likes": stats.get("likeCount", "0"),
+                    "comentarios": stats.get("commentCount", "0"),
+                    "url": f"https://www.youtube.com/watch?v={item['id']}",
+                    "coletado_em": coletado_em,
+                }
+            )
+
+    ideias.sort(key=lambda x: int(x["visualizacoes"] or 0), reverse=True)
+    ideias = ideias[:MAX_RESULTS]
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with IDEIAS_CSV.open("w", newline="", encoding="utf-8") as f:
@@ -109,17 +163,32 @@ def ler_ideias_csv() -> list[dict]:
         return list(csv.DictReader(f))
 
 
-PROMPT_TEMPLATE = """Você é um roteirista especialista em vídeos de YouTube para um canal \
-de histórias sombrias (true crime, mistérios e curiosidades dark).
+PROMPT_TEMPLATE = """Você é um roteirista especialista em vídeos curtos de TikTok para um \
+canal de nutrição, emagrecimento, dietas e receitas saudáveis.
 
-Com base na ideia/tendência de referência abaixo, crie:
-1. Um título otimizado para YouTube (chamativo, sem clickbait enganoso)
-2. Um roteiro completo de narração (gancho nos primeiros 15 segundos, desenvolvimento \
-em blocos e conclusão com chamada para se inscrever no canal)
-3. Uma descrição otimizada para SEO (2 a 3 parágrafos)
-4. Uma lista de 8 a 12 hashtags relevantes (sem o caractere #)
+Com base no vídeo de referência abaixo (usado apenas como indicação de assunto em alta \
+no nicho — NÃO copie o conteúdo dele), crie um vídeo ORIGINAL para TikTok com:
 
-Ideia/tendência de referência:
+1. Um título/gancho de capa (curto, chamativo, para o texto de capa ou os primeiros \
+segundos na tela)
+2. Um roteiro de narração para vídeo vertical de 30 a 90 segundos: gancho nos primeiros \
+2-3 segundos, conteúdo direto (ex.: passo a passo de uma receita, ou uma dica prática de \
+emagrecimento/nutrição) e um call-to-action final para seguir o perfil. Quando fizer \
+sentido, indique sugestões de texto na tela entre colchetes.
+3. Uma legenda para a publicação no TikTok (curta, com emojis moderados, terminando com \
+uma pergunta ou chamada para comentar)
+4. Uma lista de 6 a 10 hashtags relevantes para o nicho (sem o caractere #), misturando \
+hashtags amplas (ex.: emagrecimento, dieta, receitafit) com outras mais específicas ao \
+tema do vídeo
+
+Regras importantes de conteúdo:
+- Não prometa emagrecimento milagroso, resultados garantidos ou "cura" de doenças.
+- Não invente números específicos (calorias, macros, prazos) que não estejam no vídeo de \
+referência; se citar números, deixe claro que são aproximados.
+- Ao dar recomendações de dieta, inclua uma frase breve lembrando que isso não substitui \
+orientação de um nutricionista ou médico.
+
+Vídeo de referência (apenas contexto de tendência do nicho, não copie o conteúdo):
 Título original: {titulo}
 Canal: {canal}
 Visualizações: {visualizacoes}
@@ -127,7 +196,7 @@ Visualizações: {visualizacoes}
 Responda em português do Brasil, apenas com o conteúdo solicitado."""
 
 
-def gerar_roteiro_com_claude(client: anthropic.Anthropic, ideia: dict) -> Roteiro:
+def gerar_roteiro_com_claude(client: anthropic.Anthropic, ideia: dict) -> RoteiroTikTok:
     prompt = PROMPT_TEMPLATE.format(
         titulo=ideia["titulo"],
         canal=ideia["canal"],
@@ -139,7 +208,7 @@ def gerar_roteiro_com_claude(client: anthropic.Anthropic, ideia: dict) -> Roteir
         thinking={"type": "adaptive"},
         output_config={"effort": "high"},
         messages=[{"role": "user", "content": prompt}],
-        output_format=Roteiro,
+        output_format=RoteiroTikTok,
     )
     return response.parsed_output
 
@@ -160,9 +229,10 @@ def gerar_fila_producao(ideias: list[dict]) -> None:
                 "video_id": ideia["video_id"],
                 "titulo_original": ideia["titulo"],
                 "url_referencia": ideia["url"],
+                "plataforma": "tiktok",
                 "titulo_sugerido": roteiro.titulo_sugerido,
                 "roteiro": roteiro.roteiro,
-                "descricao": roteiro.descricao,
+                "legenda": roteiro.legenda,
                 "hashtags": roteiro.hashtags,
                 "status": "roteiro_pronto",
                 "gerado_em": datetime.now(timezone.utc).isoformat(),

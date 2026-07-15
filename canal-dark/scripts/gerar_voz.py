@@ -1,6 +1,7 @@
-"""Gera a narração em áudio (TTS) para os roteiros prontos em data/fila_producao.json.
+"""Gera a narração em áudio (TTS) para os roteiros prontos em data/fila_producao.json
+(roteiros curtos, para vídeos verticais de TikTok).
 
-Ainda não implementado — este é o próximo passo do pipeline após gerar_roteiro.py.
+Ainda não implementado — próximo passo do pipeline após gerar_roteiro.py.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ def main() -> None:
     pendentes = [item for item in fila if item["status"] == "roteiro_pronto"]
     print(f"{len(pendentes)} roteiro(s) aguardando geração de voz.")
     # TODO: integrar com uma API de TTS (ElevenLabs, Azure Speech, etc.),
-    # salvar o áudio gerado e atualizar item["status"] = "voz_pronta".
+    # salvar o caminho do áudio em item["audio_path"] e atualizar
+    # item["status"] = "voz_pronta".
 
 
 if __name__ == "__main__":

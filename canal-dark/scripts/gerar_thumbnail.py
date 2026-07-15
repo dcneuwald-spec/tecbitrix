@@ -1,4 +1,5 @@
-"""Gera a thumbnail para os itens da fila com status "video_pronto".
+"""Gera a capa (cover/thumbnail) do vídeo para os itens da fila com status
+"video_pronto", no formato vertical usado pelo TikTok.
 
 Ainda não implementado — próximo passo do pipeline após montar_video.py.
 """
@@ -19,9 +20,10 @@ def carregar_fila() -> list[dict]:
 def main() -> None:
     fila = carregar_fila()
     pendentes = [item for item in fila if item["status"] == "video_pronto"]
-    print(f"{len(pendentes)} item(ns) aguardando geração de thumbnail.")
-    # TODO: gerar a thumbnail (ex.: Pillow, ou uma API de geração de imagem),
-    # salvar o arquivo gerado e atualizar item["status"] = "thumbnail_pronta".
+    print(f"{len(pendentes)} item(ns) aguardando geração de capa.")
+    # TODO: gerar a capa (ex.: Pillow, ou extrair um frame do vídeo), salvar
+    # o caminho do arquivo em item["thumbnail_path"] e atualizar
+    # item["status"] = "thumbnail_pronta".
 
 
 if __name__ == "__main__":
