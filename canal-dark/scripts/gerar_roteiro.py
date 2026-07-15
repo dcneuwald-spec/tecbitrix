@@ -249,6 +249,13 @@ def main() -> None:
         action="store_true",
         help="Pula a busca de trends e usa o data/ideias.csv já existente.",
     )
+    parser.add_argument(
+        "--limite",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Gera roteiro só para as N primeiras ideias (útil para um teste rápido/barato).",
+    )
     args = parser.parse_args()
 
     if args.so_roteiros:
@@ -262,6 +269,9 @@ def main() -> None:
     if not ideias:
         print("Nenhuma ideia encontrada.")
         sys.exit(0)
+
+    if args.limite is not None:
+        ideias = ideias[: args.limite]
 
     gerar_fila_producao(ideias)
 
